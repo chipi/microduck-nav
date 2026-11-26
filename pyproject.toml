@@ -34,6 +34,7 @@ constraint-dependencies = [
     "scipy==1.18.0",
 ]
 override-dependencies = [
+    "mjviser==0.0.14",
     "better-actuator-models @ git+https://github.com/Rhoban/bam.git@62bd8ce12154340be97e06f7f41a0ca8f116d967",
     "protobuf>=4.0,<7.0",
     "onnx>=1.20.1",
