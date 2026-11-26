@@ -23,6 +23,7 @@ packages = ["src/microduck_nav"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.uv]
 constraint-dependencies = [
