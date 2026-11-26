@@ -8,6 +8,7 @@ from microduck_nav.rl_cfg import NavOnPolicyRunner, make_rl_cfg
 FULL = "Mjlab-Nav-MicroDuck"
 ONE_WALL = "Mjlab-Nav-OneWall-MicroDuck"
 DEPLOY = "Mjlab-Nav-Deploy-MicroDuck"
+OURS = "Mjlab-Nav-Ours-MicroDuck"
 
 # Milestone M1: one wall across the approach, no impairments.
 _ONE_WALL = NavOptions(layout="one_wall", impairments=False)
@@ -15,11 +16,15 @@ _ONE_WALL = NavOptions(layout="one_wall", impairments=False)
 # velocity is sent. Layouts and impairments are the full task's.
 DEPLOY_DECIMATION = 5
 _DEPLOY = NavOptions(policy_decimation=DEPLOY_DECIMATION, lateral_limit=0.0)
+# R7 (docs/R7.md): the deploy task trained on our own challenge families (a lab-scenarios pool, one family held out) with the navigator's
+# reflex and cliff stop in the loop and a cost for each time one fires.
+_OURS = NavOptions(policy_decimation=DEPLOY_DECIMATION, lateral_limit=0.0, pool=True, holdout_family="doorway", guards=True)
 
 for _task, _opts, _name in (
     (FULL, NavOptions(), "microduck_nav"),
     (ONE_WALL, _ONE_WALL, "microduck_nav_one_wall"),
     (DEPLOY, _DEPLOY, "microduck_nav_deploy"),
+    (OURS, _OURS, "microduck_nav_ours"),
 ):
     register_mjlab_task(
         task_id=_task,

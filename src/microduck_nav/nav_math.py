@@ -3,7 +3,7 @@
 Ported from mdp/geometry.py, mdp/commands.py (navigation_progress) and mdp/rewards.py of Isaac Lab
 exp/microduck 802b8d5 (BSD-3-Clause). The formulas are theirs; quaternions are (w, x, y, z) as in mjlab
 (theirs are (x, y, z, w)), and the environment lookups are arguments. `geom` is
-(centres (n, k, 3), yaw quaternions (n, k, 4), local half sizes (k, 2), radii (k,)).
+(centres (n, k, 3), yaw quaternions (n, k, 4), local half sizes (k, 2), radii (k,)), or sizes per environment: (n, k, 2) and (n, k).
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ ROBOT_RADIUS = 0.12
 def obstacle_point_clearances(points: torch.Tensor, geom: Geometry, robot_radius: float) -> torch.Tensor:
     """Signed planar clearance for each (environment, sample point, obstacle)."""
     centers, rotations, half_sizes, radii = geom
+    if half_sizes.ndim == 3:  # sizes per environment (the pool's boxes): (n, k, 2) and (n, k) line up with (n, points, k)
+        half_sizes, radii = half_sizes[:, None], radii[:, None]
     offsets = points[:, :, None, :] - centers[:, None, :, :]
     rot = rotations[:, None].expand(-1, points.shape[1], -1, -1)
     local = quat_apply_inverse(rot, offsets)[..., :2]

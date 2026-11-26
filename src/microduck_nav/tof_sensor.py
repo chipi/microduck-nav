@@ -194,3 +194,8 @@ class ToFSensor(RayCastSensor):
     @property
     def env_directions(self) -> torch.Tensor:
         return self._env_dirs
+
+    def world_geometry(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """The sensor's origin (n, 3), its 64 beams as world unit vectors (n, 64, 3) and each beam's x component in the site frame
+        (n, 64), as of the last ray update: what turns an axial depth into a distance along the beam and a point in the world."""
+        return self._cached_world_origins[:, 0], self._cached_world_rays, self._env_dirs[..., 0]

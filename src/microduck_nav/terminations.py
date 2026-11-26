@@ -9,14 +9,14 @@ from microduck_nav.obstacles import SLOT_NAMES
 CONTACT_PREFIX = "contact_"
 
 
-def contact_sensor_names() -> tuple[str, ...]:
-    return tuple(CONTACT_PREFIX + n for n in SLOT_NAMES)
+def contact_sensor_names(slots: tuple[str, ...] = SLOT_NAMES) -> tuple[str, ...]:
+    return tuple(CONTACT_PREFIX + n for n in slots)
 
 
-def obstacle_forces(env, threshold: float = 0.1) -> torch.Tensor:
+def obstacle_forces(env, threshold: float = 0.1, slots: tuple[str, ...] = SLOT_NAMES) -> torch.Tensor:
     """Peak contact force of the robot against each obstacle over the last control step's physics steps, (n, 8)."""
     peaks = []
-    for name in contact_sensor_names():
+    for name in contact_sensor_names(slots):
         history = env.scene[name].data.force_history
         if history is None:
             raise ValueError("Obstacle collision detection needs a contact sensor with force history.")
@@ -24,9 +24,9 @@ def obstacle_forces(env, threshold: float = 0.1) -> torch.Tensor:
     return torch.stack(peaks, dim=-1)
 
 
-def obstacle_collision(env, threshold: float = 0.1) -> torch.Tensor:
+def obstacle_collision(env, threshold: float = 0.1, slots: tuple[str, ...] = SLOT_NAMES) -> torch.Tensor:
     """Any robot part touching any obstacle with more than `threshold` N in any physics step of the control step."""
-    return (obstacle_forces(env) > threshold).any(dim=-1)
+    return (obstacle_forces(env, threshold, slots) > threshold).any(dim=-1)
 
 
 def field_boundary(env, extent: float = 5.0) -> torch.Tensor:

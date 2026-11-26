@@ -75,6 +75,11 @@ def command_rate(env) -> torch.Tensor:
     return nav_math.command_rate(term.velocity_commands, term.previous_velocity_commands, term.velocity_limits)
 
 
+def guard_intervention(env) -> torch.Tensor:
+    """One for each policy tick at which a guard changed the command (guards.py), as an event: the weight is the cost of one."""
+    return env.action_manager.get_term("nav").guard_event.float() / env.step_dt
+
+
 def terminated_penalty(env) -> torch.Tensor:
     return env.termination_manager.terminated.float() / env.step_dt
 
@@ -111,6 +116,9 @@ class NavigationObstacleBypass(ManagerTermBase):
     def __init__(self, cfg, env):
         super().__init__(env)
         centers, rotations, self._half_sizes, self._radii = get_field(env).geometry()
+        self._per_env = self._half_sizes.ndim == 3  # the pool's boxes differ per environment: held with the centres, refreshed at reset
+        if self._per_env:
+            self._half_sizes, self._radii = self._half_sizes.clone(), self._radii.clone()
         self._centers, self._rotations = centers.clone(), rotations.clone()
         n, dev = env.num_envs, env.device
         self._previous = torch.zeros(n, 3, device=dev)
@@ -133,12 +141,18 @@ class NavigationObstacleBypass(ManagerTermBase):
     def bypassed(self) -> torch.Tensor:
         return self._paid
 
+    def _face(self, expanded: torch.Tensor, axis: torch.Tensor) -> torch.Tensor:
+        """The target obstacle's expanded half side along `axis`, for every environment."""
+        return expanded[self._rows, self._target, axis] if self._per_env else expanded[self._target, axis]
+
     def reset(self, env_ids=None) -> None:
         if env_ids is None or isinstance(env_ids, slice):
             ids = torch.arange(self.num_envs, device=self.device)
         else:
             ids = env_ids
-        centers, rotations, _, _ = get_field(self._env).geometry()
+        centers, rotations, half_sizes, radii = get_field(self._env).geometry()
+        if self._per_env:
+            self._half_sizes[ids], self._radii[ids] = half_sizes[ids], radii[ids]
         self._centers[ids], self._rotations[ids] = centers[ids], rotations[ids]
         pos, quat = root_pose(self._env, ids)
         self._previous[ids] = pos
@@ -164,8 +178,8 @@ class NavigationObstacleBypass(ManagerTermBase):
         end = current_target[rows, self._axis] * self._sign
         lateral_start = previous_target[rows, 1 - self._axis]
         lateral_end = current_target[rows, 1 - self._axis]
-        half_length = expanded[self._target, self._axis]
-        half_width = expanded[self._target, 1 - self._axis]
+        half_length = self._face(expanded, self._axis)
+        half_width = self._face(expanded, 1 - self._axis)
         motion = end - start
         none = motion.abs() < 1.0e-8
         safe_motion = torch.where(none, 1.0, motion)

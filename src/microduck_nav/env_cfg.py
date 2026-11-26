@@ -24,10 +24,13 @@ from microduck_nav import observations as obs
 from microduck_nav import rewards
 from microduck_nav import terminations as terms
 from microduck_nav.action import SENSOR, WALKER_GROUP, NavigationActionCfg
-from microduck_nav.commands import NavigationCommandCfg
-from microduck_nav.field import reset_obstacle_field
+from microduck_nav.commands import NavigationCommandCfg, PoolNavigationCommandCfg
+from microduck_nav.field import reset_obstacle_field, reset_pool_scene
 from microduck_nav.layouts import NVIDIA_WEIGHTS
-from microduck_nav.obstacles import BODY, SLOT_NAMES, exclude_static_contacts, slot_entities
+from microduck_nav.obstacles import (
+    BODY, POOL_SLOTS, SLOT_NAMES, exclude_pool_contacts, exclude_static_contacts, pool_slot_entities, pool_slot_names, slot_entities,
+)
+from microduck_nav.pool import pool_path
 from microduck_nav.tick_history import TOF_HISTORY
 from microduck_nav.tof_sensor import ToFSensorCfg
 
@@ -53,6 +56,8 @@ REWARD_WEIGHTS = {
     "command_rate": -5.0,
     "failure": -30.0,
 }
+# R7b, with guards on: the cost of a tick at which a guard changed the command. Not NVIDIA's; nothing measured sets it: tunable
+GUARD_INTERVENTION_WEIGHT = -2.0
 
 
 @dataclass
@@ -69,6 +74,11 @@ class NavOptions:
     collision_threshold: float = 0.1
     policy_decimation: int = 1  # walker steps per policy action: 1 is 50 Hz, 5 the navigator's 10 Hz
     lateral_limit: float = 0.12  # the residual's lateral bound [m/s]; 0 sends no lateral, as the duck navigator does
+    pool: bool = False  # R7a: the scenes come from a lab-scenarios pool file, not NVIDIA's layouts
+    pool_file: str | None = None  # the file: None is $MICRODUCK_POOL, else data/pools/ours-v1.jsonl of this checkout
+    holdout_family: str = "doorway"  # R7a: pool layouts left out of training, comma separated; none for nothing
+    pool_slots: int = POOL_SLOTS  # R7a: boxes a scene can hold; a pool item with more is skipped and counted
+    guards: bool = False  # R7b: the navigator's reflex and cliff stop between the command and the walker, and their cost
 
 
 def _proprio_group(base: ManagerBasedRlEnvCfg) -> dict[str, ObservationTermCfg]:
@@ -136,7 +146,7 @@ def _sensors(base: ManagerBasedRlEnvCfg, opts: NavOptions, decimation: int):
             num_slots=1,
             history_length=decimation,
         )
-        for name in SLOT_NAMES
+        for name in (pool_slot_names(opts.pool_slots) if opts.pool else SLOT_NAMES)
     )
     tof = ToFSensorCfg(
         name=SENSOR,
@@ -160,9 +170,9 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
     cfg.metrics = {}
     cfg.scene.num_envs = 4096
     cfg.scene.env_spacing = ENV_SPACING
-    cfg.scene.entities = {**cfg.scene.entities, **slot_entities()}
+    cfg.scene.entities = {**cfg.scene.entities, **(pool_slot_entities(opts.pool_slots) if opts.pool else slot_entities())}
     cfg.scene.sensors = _sensors(cfg, opts, cfg.decimation)
-    cfg.scene.spec_fn = exclude_static_contacts
+    cfg.scene.spec_fn = exclude_pool_contacts if opts.pool else exclude_static_contacts
     cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 200)
     cfg.sim.contact_sensor_maxmatch = 128  # a robot overlapping a wall matches more than the default 64 contacts
 
@@ -173,9 +183,11 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
             walker_onnx=opts.walker_onnx,
             limits=(0.35, opts.lateral_limit, 0.75),
             policy_decimation=opts.policy_decimation,
+            guards=opts.guards,
         )
     }
-    cfg.commands = {"twist": NavigationCommandCfg(speed_range=opts.speed_range)}
+    command_cfg = PoolNavigationCommandCfg if opts.pool else NavigationCommandCfg
+    cfg.commands = {"twist": command_cfg(speed_range=opts.speed_range)}
 
     events = {name: cfg.events[name] for name in KEPT_EVENTS if name in cfg.events}
     events["reset_base"].params["pose_range"].update(x=(-0.15, 0.15), y=(-0.15, 0.15), yaw=(-3.14, 3.14))
@@ -186,15 +198,22 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
     for name, final in (("randomize_com", 0.015), ("randomize_head_com", 0.01)):
         if name in events:
             events[name].params["ranges"] = (-final, final)
-    events["obstacle_field"] = EventTermCfg(
-        func=reset_obstacle_field,
-        mode="reset",
-        params={
-            "layout": opts.layout,
-            "layout_weights": opts.layout_weights if opts.layout_weights is not None else dict(NVIDIA_WEIGHTS),
-            "one_wall_distance_range": opts.one_wall_distance_range,
-        },
-    )
+    if opts.pool:
+        events["obstacle_field"] = EventTermCfg(
+            func=reset_pool_scene,
+            mode="reset",
+            params={"pool": str(pool_path(opts.pool_file)), "holdout_family": opts.holdout_family, "slots": opts.pool_slots},
+        )
+    else:
+        events["obstacle_field"] = EventTermCfg(
+            func=reset_obstacle_field,
+            mode="reset",
+            params={
+                "layout": opts.layout,
+                "layout_weights": opts.layout_weights if opts.layout_weights is not None else dict(NVIDIA_WEIGHTS),
+                "one_wall_distance_range": opts.one_wall_distance_range,
+            },
+        )
     cfg.events = events
 
     cfg.rewards = {
@@ -211,6 +230,10 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
         "command_rate": RewardTermCfg(func=rewards.command_rate, weight=REWARD_WEIGHTS["command_rate"]),
         "failure": RewardTermCfg(func=rewards.terminated_penalty, weight=REWARD_WEIGHTS["failure"]),
     }
+    if opts.guards:
+        cfg.rewards["guard_intervention"] = RewardTermCfg(
+            func=rewards.guard_intervention, weight=GUARD_INTERVENTION_WEIGHT
+        )
 
     base_terms = cfg.terminations
     cfg.terminations = {
@@ -218,7 +241,9 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
         "fell_over": base_terms["fell_over"],
         "nan_state": base_terms["nan_state"],
         "obstacle_collision": TerminationTermCfg(
-            func=terms.obstacle_collision, time_out=False, params={"threshold": opts.collision_threshold}
+            func=terms.obstacle_collision,
+            time_out=False,
+            params={"threshold": opts.collision_threshold, "slots": pool_slot_names(opts.pool_slots) if opts.pool else SLOT_NAMES},
         ),
         "field_boundary": TerminationTermCfg(func=terms.field_boundary, time_out=True, params={"extent": FIELD_EXTENT}),
     }

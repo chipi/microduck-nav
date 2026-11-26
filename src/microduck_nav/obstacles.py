@@ -97,3 +97,42 @@ def footprints(device="cpu") -> tuple[torch.Tensor, torch.Tensor]:
     half = torch.tensor([s.footprint_half for s in SLOTS], device=device)
     radii = torch.tensor([s.radius for s in SLOTS], device=device)
     return half, radii
+
+
+# The pool task's slots (R7a). NVIDIA's eight are fixed shapes; our scenes hold up to 14 boxes of any size (a corridor's walls are
+# 3.8 m long, a chair's leg 3 cm across), so a pool slot is a unit box whose size and height are written per environment at reset.
+# The evaluation's simulator builds every obstacle as a box too (robotics-lab labrunner.scene.Box), so a box is the exact shape.
+POOL_PREFIX = "pool_"
+POOL_SLOTS = 14  # the most obstacles any item of ours-v1 holds (its manifest's max_obstacles)
+POOL_BOX = 0.05  # half side of a slot before its first reset [m]
+
+
+def pool_slot_names(count: int = POOL_SLOTS) -> tuple[str, ...]:
+    return tuple(f"{POOL_PREFIX}{i:02d}" for i in range(count))
+
+
+def pool_slot_spec() -> mujoco.MjSpec:
+    """A mocap box centred on its body origin: the pose written at reset is the box's centre, height included."""
+    spec = mujoco.MjSpec()
+    body = spec.worldbody.add_body(name=BODY, mocap=True)
+    body.add_geom(
+        name=GEOM,
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[POOL_BOX, POOL_BOX, POOL_BOX],
+        rgba=[0.65, 0.66, 0.68, 1.0],
+    )
+    return spec
+
+
+def pool_slot_entities(count: int = POOL_SLOTS) -> dict[str, EntityCfg]:
+    park = EntityCfg.InitialStateCfg(pos=(0.0, 0.0, PARK_Z))
+    return {name: EntityCfg(spec_fn=pool_slot_spec, init_state=park) for name in pool_slot_names(count)}
+
+
+def exclude_pool_contacts(spec: mujoco.MjSpec) -> None:
+    """The pool slots collide with the robot only: not with the floor, not with each other."""
+    bodies = [b.name for b in spec.bodies if b.name.startswith(POOL_PREFIX) and b.name.endswith(f"/{BODY}")]
+    for i, a in enumerate(bodies):
+        spec.add_exclude(name=f"{a.split('/')[0]}_floor", bodyname1="terrain", bodyname2=a)
+        for b in bodies[i + 1 :]:
+            spec.add_exclude(name=f"{a.split('/')[0]}_{b.split('/')[0]}", bodyname1=a, bodyname2=b)

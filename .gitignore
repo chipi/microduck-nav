@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# the pool is 30 MB: made by lab-scenarios pool and checked against data/pools/ours-v1.manifest.json (docs/R7.md)
+data/pools/*.jsonl

@@ -124,3 +124,24 @@ class NavigationCommand(CommandTerm):
         self.vel_command_b[:, 1] = 0.0
         self.vel_command_b[:, 2] = (self.cfg.destination_heading_gain * error).clamp(-self.cfg.max_yaw_rate, self.cfg.max_yaw_rate)
         self.vel_command_b[self.destination_reached] = 0.0
+
+
+@dataclass(kw_only=True)
+class PoolNavigationCommandCfg(NavigationCommandCfg):
+    """The same request law, the destination read from the pool item the environment holds (R7a)."""
+
+    def build(self, env) -> "PoolNavigationCommand":
+        return PoolNavigationCommand(self, env)
+
+
+class PoolNavigationCommand(NavigationCommand):
+    cfg: PoolNavigationCommandCfg
+
+    def _sample_destinations(self, fresh: torch.Tensor) -> None:
+        """The item's goal, placed by the robot's reset pose when the scene was (field.reset_pool_scene, which runs first)."""
+        field = get_field(self._env)
+        position, _ = root_pose(self._env, fresh, self.cfg.asset_name)
+        self.destination_w[fresh, :2] = field.goal_w[fresh]
+        self.destination_w[fresh, 2] = position[:, 2]
+        low, high = self.cfg.speed_range
+        self.destination_speed[fresh] = torch.empty(len(fresh), device=self.device).uniform_(low, high)

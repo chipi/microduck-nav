@@ -9,6 +9,7 @@ from microduck_nav.field import get_field
 from microduck_nav import nav_math
 
 MIN_RANGE = 0.12
+TOF_RANGE = 4.0
 
 
 def tof_ranges_and_validity(env) -> torch.Tensor:
@@ -34,7 +35,9 @@ def zeros(env, dim: int) -> torch.Tensor:
 
 def obstacle_clearance(env) -> torch.Tensor:
     pos = env.scene["robot"].data.root_link_pos_w
-    return nav_math.obstacle_clearances(pos, get_field(env).geometry())
+    field = get_field(env)
+    clearance = nav_math.obstacle_clearances(pos, field.geometry())
+    return clearance.clamp_max(TOF_RANGE) if field.pool else clearance  # a parked or overhead pool slot is far: no further than the sensor sees
 
 
 def held_action(env) -> torch.Tensor:
