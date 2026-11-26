@@ -15,3 +15,6 @@ def walker_path():
     digest = hashlib.sha256(WALKER.read_bytes()).hexdigest()
     assert digest.startswith(WALKER_SHA_PREFIX), f"unexpected walker {digest}"
     return WALKER
+
+
+os.environ.setdefault("MJLAB_WARP_QUIET", "1")

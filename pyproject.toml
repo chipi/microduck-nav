@@ -24,6 +24,7 @@ packages = ["src/microduck_nav"]
 testpaths = ["tests"]
 addopts = "-ra"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["slow: runs the real train command on CPU (minutes); deselect with -m \"not slow\""]
 
 [tool.uv]
 constraint-dependencies = [
@@ -47,3 +48,6 @@ torch = { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" }
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[project.entry-points."mjlab.tasks"]
+microduck_nav = "microduck_nav.tasks"
