@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "microduck-nav"
+version = "0.1.0"
+description = "Port of NVIDIA's Microduck obstacle-avoidance task to mjlab, against Pollen's walker"
+requires-python = ">=3.12, <3.13"
+license = "Apache-2.0"
+dependencies = [
+    "mjlab-microduck",
+    "better-actuator-models",
+    "torch==2.9.1",
+    "onnx>=1.20.1",
+    "onnxruntime>=1.24.4",
+    "pytest>=8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/microduck_nav"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.uv]
+constraint-dependencies = [
+    "mujoco==3.10.0",
+    "numpy==2.4.1",
+    "tensordict==0.10.0",
+    "scipy==1.18.0",
+]
+override-dependencies = [
+    "better-actuator-models @ git+https://github.com/Rhoban/bam.git@62bd8ce12154340be97e06f7f41a0ca8f116d967",
+    "protobuf>=4.0,<7.0",
+    "onnx>=1.20.1",
+    "zmq ; python_version < '3.0'",
+]
+
+[tool.uv.sources]
+mjlab-microduck = { path = "/work/pollen/microduck_rl", editable = true }
+torch = { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
