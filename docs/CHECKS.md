@@ -178,11 +178,11 @@ the term, the joint-target path, per-env sensor age from the real channel.
 
 ## Environment
 
-- `/work/microduck-nav/.venv`: 2.1 GB, 141 packages (`uv sync`), CPU torch 2.9.1+cpu from the PyTorch
+- `.venv`: 2.1 GB, 141 packages (`uv sync`), CPU torch 2.9.1+cpu from the PyTorch
   CPU index (the PyPI x86 wheel pulls CUDA libraries; the CPU wheel avoids them).
 - Pollen's pins reproduced for: mujoco 3.10.0, numpy 2.4.1, tensordict 0.10.0, scipy 1.18.0, BAM
   `62bd8ce` (the branch tip `57d13ea` made `mjlab_microduck.tasks` fail to import with
   `FrictionDRBamActuatorCfg ... 'vin_drop_gain_range'`). Other packages were not diffed against
   Pollen's `uv.lock`; known differences: onnx 1.23.2 (lock 1.22.0), onnxruntime 1.32.0 (lock 1.24.4).
-- Added for this repo: onnx, onnxruntime, pytest. `/work/pollen` was only read (the editable
+- Added for this repo: onnx, onnxruntime, pytest. Pollen's checkout was only read (the editable
   install writes ignored `__pycache__`).

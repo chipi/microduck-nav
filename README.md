@@ -10,10 +10,10 @@ and pass; the task itself (scene, observations, rewards, training) is not writte
 | Source | Commit | Licence | Used as |
 | --- | --- | --- | --- |
 | NVIDIA Isaac Lab `exp/microduck` | `802b8d5` | BSD-3-Clause | adapted: ToF impairments, residual command, guarded Beta mean |
-| Pollen `microduck_rl` (`mjlab_microduck`) | `0daab160` | Apache-2.0 (meshes CC-BY-NC-SA-4.0) | editable path dependency, read only |
+| Pollen `microduck_rl` (`mjlab_microduck`) | `0daab160` | Apache-2.0 (meshes CC-BY-NC-SA-4.0) | git dependency pinned to the commit, read only |
 
-This repository is Apache-2.0 (`LICENSE`); `NOTICE` and `licenses/` carry the notices. Nothing in
-`/work/pollen` is modified. No remote, no push.
+This repository is Apache-2.0 (`LICENSE`); `NOTICE` and `licenses/` carry the notices. Part of [robotics-lab](https://github.com/chipi/robotics-lab)
+(research plan: `docs/wip/RESEARCH-LEARNED-AVOIDANCE.md` there); its evaluations are kept with eval-harness.
 
 ## Layout
 

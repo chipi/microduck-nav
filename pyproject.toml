@@ -40,7 +40,7 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-mjlab-microduck = { path = "/work/pollen/microduck_rl", editable = true }
+mjlab-microduck = { git = "https://github.com/pollen-robotics/microduck_rl", rev = "0daab160d3fb1c2cbaba16a4a19052f36709dd9e" }
 torch = { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" }
 
 [[tool.uv.index]]
