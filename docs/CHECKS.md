@@ -1,8 +1,8 @@
-# CPU checks C1 to C5 (plan `RESEARCH-R6-PLAN.md`, section 5)
+# CPU checks C1 to C7 and the M1 dry run (plan `RESEARCH-R6-PLAN.md`, section 5)
 
 Run on the workstation, no NVIDIA GPU (Warp reports `CUDA driver not available`, `devices ['cpu']`),
 2026-11-26. Stack: mjlab 1.3.0, mujoco 3.10.0, mujoco-warp 3.8.1, warp-lang 1.12.0, rsl-rl-lib 5.0.1,
-torch 2.9.1+cpu, onnx 1.23.2, onnxruntime 1.32.0, numpy 2.4.1. `uv run pytest -q`: 72 passed.
+torch 2.9.1+cpu, onnx 1.23.2, onnxruntime 1.32.0, numpy 2.4.1. `uv run pytest -q`: 159 passed in 309 s (149 in 51 s with `-m "not slow"`).
 Numbers below come from `scripts/report_numbers.py` and `scripts/walker_speed_table.py`.
 
 | Check | Result |
@@ -13,6 +13,9 @@ Numbers below come from `scripts/report_numbers.py` and `scripts/walker_speed_ta
 | C3 walker, speed in mjlab on CPU | DONE, evidence below |
 | C4 export | PASS |
 | C5 residual action | PASS |
+| C6 task: scene, sensor, observation, rewards, terminations | PASS |
+| C7 8 envs x 50 PPO iterations on CPU | PASS (2.6 s per iteration) |
+| M1 dry run on CPU, one wall | PASS (command works end to end; the 5-iteration policy does not stop, as expected) |
 
 ## Answers to the plan's open questions
 
@@ -175,6 +178,94 @@ order in NVIDIA's code (`actions.py:60-67`) and in `nav_pad.py`.
 
 Not covered: the mjlab `ActionTerm` wrapper (this is the command maths only), the walker inside
 the term, the joint-target path, per-env sensor age from the real channel.
+
+## C6 the navigation task: PASS
+
+Registered as `Mjlab-Nav-MicroDuck` (all layouts, impairments) and `Mjlab-Nav-OneWall-MicroDuck`
+(layout `one_wall`, no impairments, the M1 task) through the `mjlab.tasks` entry point; both are built on Pollen's
+`Mjlab-VelStand-Flat-Backlash-MicroDuck` config (its robot, DR, pushes and walker observation noise).
+Tests: `test_c6_layouts.py` (25), `test_c6_scene.py` (8), `test_c6_terminations.py` (4),
+`test_c6_rewards.py` (35), `test_c6_wiring.py` (5).
+
+- **Scene.** Eight mocap entities (`wall_left`, `wall_right`, ... in NVIDIA's slot order), one MJCF per slot with
+  one primitive (cylinder or box), compiled with the walker and the floor. Slot-vs-floor and slot-vs-slot contacts
+  are excluded in the MJCF (36 pairs); the robot-vs-slot contact stays. `reset_obstacle_field` runs after the
+  robot reset and writes each slot's mocap pose with explicit `env_ids` (the mjlab call refuses without them).
+  Parked slots sit 5 m below the floor. The ten layout families (ring, open, barrier, slalom, passage, thin_low,
+  blocked, corner, scattered, one_wall) are NVIDIA's sampling (`events.py`) with an explicit `torch.Generator`: the
+  same seed gives the same layouts, different seeds differ, the shuffle never moves the walls, and over 3000 draws per
+  layout no obstacle spawns closer than the spawn clearance.
+- **ToF.** `ToFSensor` subclasses mjlab's `RayCastSensor` and overrides `prepare_rays`, so each world has its own
+  ray directions and origin. 64 zones, radial to axial, floor mask, NVIDIA's corruption, dropout, a 15 Hz clock and
+  a packet channel with latency. Rays match a `mj_ray` reference that uses each env's own grid and mount.
+- **Zone grid, `mixed` is the default.** Options: `equal_angle` (Pollen's), `pinhole` (NVIDIA's), `mixed`
+  (each env draws one of the two at every reset and keeps it for the episode). In the test `mixed` gives both
+  grids in about equal numbers over many resets; a given env and seed always gets the same grid; each env's
+  rays follow its own grid. **Per-env grid works with the batched ray sensor** (the sensor takes a per-world
+  direction array), so the fallback of two sensors was not needed.
+- **Observation.** Actor group = `policy` (53) + `tof` (1290: 10 ticks of 64 ranges and 64 validity flags, newest last, then
+  10 ages) = 1343, in NVIDIA's term order; `critic` adds the true obstacle clearances; the walker has its own 34-wide
+  `walker_proprio` group with Pollen's noise.
+- **Action.** `NavigationAction`: `ResidualCommand` (C5), then the walker (C3) fed 61 inputs (proprio 34, its last output
+  14, command 3, zeros 10, so head and body inputs are zero), then the joint-position term. Checked against an
+  independent assembly. The requested speed is drawn from `speed_range = (0.2, 0.35)`, a config field.
+- **Rewards (weights).** progress +5, goal_arrival +30, barrier_bypass +5, yaw_tracking +4, command_tracking +1,
+  approach -4, command_rate -5, failure -30. **Each term is tested against NVIDIA's own functions**: their
+  `geometry.py`, `commands.py`, `rewards.py` and `terminations.py` are imported unmodified (isaaclab stubbed, with its own
+  xyzw quaternion maths in `tests/nvidia_stubs.py`) and run on the same random scenes and the same constructed
+  trajectories as ours (3 seeds x 256 envs: clearance, requested-path clearance, progress, gated progress, velocity
+  and yaw tracking, approach risk with three parameter sets, clearance risk, command rate; the stateful
+  goal arrival and obstacle bypass step by step on walks to the goal, around either end, through and short of a wall;
+  the contact threshold). Agreement 2e-5 absolute. `failure` is `terminated / step_dt` times -30 so that mjlab's
+  `dt` scaling leaves -30 per terminated step.
+- **Terminations.** A trunk contact over 0.1 N terminates: one contact sensor per slot (the secondary must be a single
+  body) reading the peak over the substeps; a wall pushed into the robot terminates that world only. The field
+  boundary (5 m from the course origin) is a time-out (truncation).
+
+Findings:
+- **Mount.** Pollen's `tof` site is level at HOME and sits at z about 0.249 m; NVIDIA's sensor looks 20 degrees down from 0.22 m.
+  `ToFSensorCfg.nominal_pitch_degrees` (default 0) is the knob; not tuned.
+- **Prop heights.** NVIDIA's obstacle footprints are exact (box sizes, radius 0.1143 m); the heights of `crate`, `low_block`
+  and `cylinder` are assumed (0.40, 0.35, 0.55 m) because the footprint is all NVIDIA's rewards use. `cylinder` is a box here
+  and `thin_post` a cylinder (NVIDIA's code treats it as a cone).
+- **Trunk contact.** The contact regex covers the whole robot subtree, as the plan's "any robot geom" reads, so a hand or foot touching a prop also terminates.
+- **Walker speed.** About 46 % of the request (C3), so reaching the 2.6 m goal needs a request of about 0.28 m/s or more;
+  the 0.2 m/s floor is config.
+- **Order.** `terminated` is read before the reset events, `env.obs_buf` holds the post-step observation and the poses
+  are read from qpos during reset (derived poses are stale there).
+
+Not covered: GPU, the Beta head's behaviour on a trained policy, per-env grid on CUDA, the impairment model against
+real ToF data, prop heights (assumed), the `Mjlab-Nav-MicroDuck` task beyond the 50 iterations of C7, any layout in M1
+except `one_wall`, the walker under heavy obstacle contact.
+
+## C7 8 envs x 50 PPO iterations on CPU: PASS
+
+`tests/test_c7_training.py` (7 tests, `slow`) runs the real command
+`train Mjlab-Nav-MicroDuck --gpu-ids None --env.scene.num-envs 8 --agent.max-iterations 50 --agent.save-interval 25 --agent.logger tensorboard`.
+- 50 iterations finish; every logged scalar (rewards, losses, std) and every actor and critic tensor in the last
+  checkpoint is finite; the 8 reward terms and the 5 termination terms are logged each iteration; progress is nonzero;
+  mean action std stays under 5 and the learning rate stays 3e-4.
+- Checkpoints `model_0`, `model_25`, `model_49` are saved with a `model_N.onnx` each. The ONNX loads in onnxruntime,
+  input `[1, 1343]`, output `[1, 3]`, finite, inside [-1, 1], and equals the checkpoint's own Beta mean to 1e-5
+  (the runner exports on save through `nav_export.export_actor`).
+- **CPU iteration time: 2.63 s mean (median 2.58 s, max 3.87 s)** over iterations 2 to 50, of which
+  2.53 s is collection (8 envs x 24 steps = 192 env steps) and 0.10 s the PPO update: 75 env steps/s. This is CPU
+  with 8 envs on this 32-thread machine; it says nothing about the GB10 (the plan's estimate is 3.2 to 4.5 s per iteration at 4096 envs).
+
+Not covered: that the policy learns anything (50 iterations at 8 envs is a plumbing test), GPU, multi-GPU, the
+W&B logger.
+
+## M1 dry run on CPU
+
+`tests/test_m1_dry_run.py` (3 tests, `slow`): the M1 command (`docs/M1.md`) at 16 envs x 5 iterations on
+`Mjlab-Nav-OneWall-MicroDuck` runs, saves `model_0` and `model_4` with their ONNX, and the replay
+(`python -m microduck_nav.replay`) loads the checkpoint, runs 4 envs for 150 steps and prints a verdict. The
+5-iteration policy does not stop before the wall (0 of 4 stopped, no collision, mean closed 0.25 m, final speed 0.15 m/s);
+that is the expected result and not a statement about M1 on the GPU. `docs/M1.md` is checked against the commands the
+repository builds.
+
+Not covered: the 64 x 20 smoke and 4096 x 200 run themselves, a replay of a trained policy, the "done" thresholds
+(chosen here, not the plan's).
 
 ## Environment
 
