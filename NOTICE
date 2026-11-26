@@ -12,10 +12,19 @@ keeps that source's notice.
    - sensors.py: the ToF impairment model (src/microduck_nav/impairments.py)
    - mdp/actions.py: the residual command processing (src/microduck_nav/residual_action.py)
    - agents/navigation_distribution.py: the guarded Beta mean (src/microduck_nav/nav_export.py)
+   - mdp/events.py: the nine obstacle layout families and their bounds (src/microduck_nav/layouts.py)
+   - mdp/geometry.py, mdp/commands.py, mdp/rewards.py: clearance, progress and risk maths, the goal arrival
+     and obstacle bypass terms (src/microduck_nav/nav_math.py, rewards.py), the destination request
+     (src/microduck_nav/commands.py)
+   - mdp/terminations.py, mdp/observations.py, obstacle_avoidance_env_cfg.py, agents/rsl_rl_ppo_cfg.py: the
+     collision and boundary terms, the observation terms, the task layout and weights, the PPO settings
+     (src/microduck_nav/terminations.py, observations.py, env_cfg.py, rl_cfg.py)
    and from scripts/deploy/microduck_tof_nav/nav_pad.py: command_from_action, the ONNX contract.
+   The tests run NVIDIA's own rewards.py, geometry.py and commands.py unmodified from a local clone
+   (tests/nvidia_stubs.py); the clone is not part of this repository.
 
 2. Pollen Robotics microduck_rl (mjlab_microduck), commit 0daab160
-   Apache-2.0. Used as an editable path dependency; not copied into this repository, except that
+   Apache-2.0. Used as a git dependency pinned to the commit; not copied into this repository, except that
    src/microduck_nav/tof_geometry.py reproduces the zone-direction construction of
    src/mjlab_microduck/sim/tof.py (lines 50-62). The robot meshes of microduck_rl are
    CC-BY-NC-SA-4.0 (LICENSE-MODELS.md there) and are not part of this repository.
