@@ -85,3 +85,21 @@ def test_floor_is_hit_when_pitched_down(rs):
     bottom_row = d[:, 56:64]
     assert (bottom_row > 0).all()
     assert (bottom_row < 1.0).all()
+
+
+def test_floor_hits_are_found_from_hit_positions(rs):
+    from microduck_nav.impairments import floor_hit_mask
+
+    box = torch.zeros(4, 3)
+    box[:, 0] = 1.0
+    box[:, 2] = 0.3
+    rs.place(box_pos=box, head_pitch=torch.full((4,), 0.3491))
+    dist = rs.sense().clone()
+    sensor = rs.scene["tof"]
+    z = sensor.data.hit_pos_w[..., 2]
+    axial = geo.radial_to_axial(dist, geo.zone_directions("pinhole"))
+    floor = floor_hit_mask(z, axial.clamp_min(0.0))
+    assert floor[:, 56:64].all()
+    obstacle_zone = 3 * 8 + 3
+    assert dist[0, obstacle_zone] > 0 and not floor[0, obstacle_zone]
+    assert not floor[dist < 0].any()
