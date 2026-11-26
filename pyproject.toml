@@ -42,11 +42,19 @@ override-dependencies = [
 
 [tool.uv.sources]
 mjlab-microduck = { git = "https://github.com/pollen-robotics/microduck_rl", rev = "0daab160d3fb1c2cbaba16a4a19052f36709dd9e" }
-torch = { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" }
+torch = [
+    { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [project.entry-points."mjlab.tasks"]
