@@ -8,6 +8,8 @@ nothing has run on a GPU yet. The ToF zone grid is a config option, `grid`: `mix
 draws Pollen's equal-angle or NVIDIA's pinhole grid at reset), `equal_angle` or `pinhole`.
 The DGX command for M1 is in `docs/M1.md`. M2 (`docs/M2.md`) has two: `Mjlab-Nav-MicroDuck` (50 Hz, NVIDIA-faithful) and
 `Mjlab-Nav-Deploy-MicroDuck` (a 10 Hz policy and no lateral residual, matched to robotics-lab's navigator).
+R7 (`docs/R7.md`) is `Mjlab-Nav-Ours-MicroDuck`: the deploy task over a pool of robotics-lab's own challenge scenes (one family held
+out) with the navigator's reflex and cliff stop in the loop, each intervention costing reward.
 
 ## Where it comes from
 
