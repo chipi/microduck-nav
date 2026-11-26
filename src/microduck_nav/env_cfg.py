@@ -28,12 +28,12 @@ from microduck_nav.commands import NavigationCommandCfg
 from microduck_nav.field import reset_obstacle_field
 from microduck_nav.layouts import NVIDIA_WEIGHTS
 from microduck_nav.obstacles import BODY, SLOT_NAMES, exclude_static_contacts, slot_entities
+from microduck_nav.tick_history import TOF_HISTORY
 from microduck_nav.tof_sensor import ToFSensorCfg
 
 BASE_TASK = "Mjlab-VelStand-Flat-Backlash-MicroDuck"
 TOF_SITE = "tof"
 TOF_MAX_RANGE = 4.0
-TOF_HISTORY = 10
 ENV_SPACING = 14.0
 FIELD_EXTENT = 5.0
 PROPRIO_TERMS = ("base_ang_vel", "projected_gravity", "joint_pos", "joint_vel")
@@ -67,6 +67,8 @@ class NavOptions:
     speed_range: tuple[float, float] = (0.2, 0.35)
     walker_onnx: str | None = None
     collision_threshold: float = 0.1
+    policy_decimation: int = 1  # walker steps per policy action: 1 is 50 Hz, 5 the navigator's 10 Hz
+    lateral_limit: float = 0.12  # the residual's lateral bound [m/s]; 0 sends no lateral, as the duck navigator does
 
 
 def _proprio_group(base: ManagerBasedRlEnvCfg) -> dict[str, ObservationTermCfg]:
@@ -74,25 +76,36 @@ def _proprio_group(base: ManagerBasedRlEnvCfg) -> dict[str, ObservationTermCfg]:
     return {name: deepcopy(actor[name]) for name in PROPRIO_TERMS}
 
 
-def _observations(base: ManagerBasedRlEnvCfg) -> dict[str, ObservationGroupCfg]:
+def _observations(base: ManagerBasedRlEnvCfg, opts: NavOptions) -> dict[str, ObservationGroupCfg]:
     zeros = lambda dim: ObservationTermCfg(func=obs.zeros, params={"dim": dim})
     policy = _proprio_group(base)
-    policy["actions"] = ObservationTermCfg(func=last_action)
+    held = opts.policy_decimation > 1
+    action_func = obs.held_action if held else last_action
+    policy["actions"] = ObservationTermCfg(func=action_func)
     policy["command"] = deepcopy(base.observations["actor"].terms["command"])
     policy["head_command"] = zeros(4)
     policy["body_command"] = zeros(6)
     policy["applied_command"] = ObservationTermCfg(func=obs.applied_velocity_commands)
 
     critic = deepcopy(base.observations["critic"].terms)
-    critic["actions"] = ObservationTermCfg(func=last_action)
+    critic["actions"] = ObservationTermCfg(func=action_func)
     critic["head_command"] = zeros(4)
     critic["body_command"] = zeros(6)
     critic["obstacle_clearance"] = ObservationTermCfg(func=obs.obstacle_clearance)
 
-    return {
-        WALKER_GROUP: ObservationGroupCfg(terms=_proprio_group(base), concatenate_terms=True, enable_corruption=True),
-        "policy": ObservationGroupCfg(terms=policy, concatenate_terms=True, enable_corruption=True),
-        "tof": ObservationGroupCfg(
+    if held:
+        # the navigator reads the joint velocities of its previous tick: the lag is a tick of walker steps, not one step
+        policy["joint_vel"].delay_min_lag = policy["joint_vel"].delay_max_lag = opts.policy_decimation
+        tof = ObservationGroupCfg(
+            terms={
+                "ranges_and_validity": ObservationTermCfg(func=obs.tof_ranges_history),
+                "age": ObservationTermCfg(func=obs.tof_age_history),
+            },
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
+    else:
+        tof = ObservationGroupCfg(
             terms={
                 "ranges_and_validity": ObservationTermCfg(func=obs.tof_ranges_and_validity),
                 "age": ObservationTermCfg(func=obs.tof_age),
@@ -101,7 +114,12 @@ def _observations(base: ManagerBasedRlEnvCfg) -> dict[str, ObservationGroupCfg]:
             enable_corruption=False,
             history_length=TOF_HISTORY,
             flatten_history_dim=True,
-        ),
+        )
+
+    return {
+        WALKER_GROUP: ObservationGroupCfg(terms=_proprio_group(base), concatenate_terms=True, enable_corruption=True),
+        "policy": ObservationGroupCfg(terms=policy, concatenate_terms=True, enable_corruption=True),
+        "tof": tof,
         "critic": ObservationGroupCfg(terms=critic, concatenate_terms=True, enable_corruption=False),
     }
 
@@ -148,8 +166,15 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
     cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 200)
     cfg.sim.contact_sensor_maxmatch = 128  # a robot overlapping a wall matches more than the default 64 contacts
 
-    cfg.observations = _observations(cfg)
-    cfg.actions = {"nav": NavigationActionCfg(entity_name="robot", walker_onnx=opts.walker_onnx)}
+    cfg.observations = _observations(cfg, opts)
+    cfg.actions = {
+        "nav": NavigationActionCfg(
+            entity_name="robot",
+            walker_onnx=opts.walker_onnx,
+            limits=(0.35, opts.lateral_limit, 0.75),
+            policy_decimation=opts.policy_decimation,
+        )
+    }
     cfg.commands = {"twist": NavigationCommandCfg(speed_range=opts.speed_range)}
 
     events = {name: cfg.events[name] for name in KEPT_EVENTS if name in cfg.events}

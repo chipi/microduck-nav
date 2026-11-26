@@ -35,3 +35,33 @@ def zeros(env, dim: int) -> torch.Tensor:
 def obstacle_clearance(env) -> torch.Tensor:
     pos = env.scene["robot"].data.root_link_pos_w
     return nav_math.obstacle_clearances(pos, get_field(env).geometry())
+
+
+def held_action(env) -> torch.Tensor:
+    """The residuals the policy last sent, clipped as its deployment does; held through a tick, unlike mjlab's last_action,
+    which is whatever was passed to the latest walker step."""
+    return env.action_manager.get_term("nav").raw_action.clamp(-1.0, 1.0)
+
+
+def record_tick(env, force: bool = False) -> None:
+    """Pushes the delivered frame and its age into the per-tick history when the policy is about to read it. Idempotent within
+    a walker step, and a row that was reset mid-tick waits for the next tick."""
+    nav = env.action_manager.get_term("nav")
+    history = nav.tof_history
+    if not (force or nav.at_tick):
+        return
+    step = env.common_step_counter
+    rows = torch.ones_like(history.empty) if (force or step != history.last_step) else history.empty.clone()
+    if rows.any():
+        history.push(tof_ranges_and_validity(env), tof_age(env).squeeze(-1), rows, step)
+
+
+def tof_ranges_history(env) -> torch.Tensor:
+    """Ten policy ticks of 64 ranges then 64 flags, oldest first (what mjlab's history of tof_ranges_and_validity gives at 50 Hz)."""
+    record_tick(env)
+    return env.action_manager.get_term("nav").tof_history.ranges.flatten(1)
+
+
+def tof_age_history(env) -> torch.Tensor:
+    record_tick(env)
+    return env.action_manager.get_term("nav").tof_history.ages

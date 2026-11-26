@@ -18,10 +18,13 @@ import math
 import torch
 
 from microduck_nav.action import SENSOR
-from microduck_nav.env_cfg import PROPRIO_TERMS, TOF_HISTORY
+from microduck_nav.env_cfg import PROPRIO_TERMS
+from microduck_nav.observations import record_tick
+from microduck_nav.tick_history import TOF_HISTORY
 from microduck_nav.tof_geometry import zone_directions
 
 TASK = "Mjlab-Nav-MicroDuck"
+DEPLOY_TASK = "Mjlab-Nav-Deploy-MicroDuck"
 ZONES = 64
 CLOCK = 2.0  # the sensor's env time while a state is read; ages need delivered_time >= 0, and float32 is exact enough here
 POLICY_TERMS = PROPRIO_TERMS + ("actions", "command", "head_command", "body_command", "applied_command")
@@ -117,13 +120,13 @@ def f32(values) -> torch.Tensor:
     return torch.tensor(values, dtype=torch.float32)
 
 
-def make_env():
+def make_env(task: str = TASK):
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.tasks.registry import load_env_cfg
 
     import mjlab.tasks  # noqa: F401  registers the tasks through the entry points
 
-    cfg = load_env_cfg(TASK)
+    cfg = load_env_cfg(task)
     cfg.scene.num_envs = 1
     cfg.seed = 0
     env = ManagerBasedRlEnv(cfg, device="cpu")
@@ -152,6 +155,7 @@ def set_proprio(env, state: dict) -> None:
     env._imu_misalign_quat = f32([[1.0, 0.0, 0.0, 0.0]])
     env.sim.forward()
     env.action_manager.action[:] = f32([state["previous_action"]])
+    env.action_manager.get_term("nav")._raw[:] = f32([state["previous_action"]])
     env.command_manager.get_term("twist").vel_command_b[:] = f32([state["requested"]])
     env.action_manager.get_term("nav").residual.previous[:] = f32([state["applied"]])
 
@@ -165,7 +169,10 @@ def policy_group(env) -> torch.Tensor:
 
 def tof_group(env, state: dict, step_s: float) -> torch.Tensor:
     manager = env.observation_manager
-    for buffer in manager._group_obs_term_history_buffer["tof"].values():
+    history = env.action_manager.get_term("nav").tof_history
+    if history is not None:  # a policy that acts every N steps keeps one entry per tick in its own ring
+        history.reset(slice(None))
+    for buffer in manager._group_obs_term_history_buffer["tof"].values() if history is None else ():
         buffer.reset()
     sensor = env.scene[SENSOR]
     for frame, age in history_for(state["frames"], step_s, TOF_HISTORY):
@@ -177,13 +184,19 @@ def tof_group(env, state: dict, step_s: float) -> torch.Tensor:
             sensor.channel.delivered_frame[0] = f32(frame)
             sensor.env_time[0] = CLOCK
             sensor.channel.delivered_time[0] = CLOCK - age
+        if history is None:
+            out = manager.compute_group("tof", update_history=True)
+        else:
+            record_tick(env, force=True)
+    if history is not None:
         out = manager.compute_group("tof", update_history=True)
     return out
 
 
-def build_fixture() -> dict:
-    env = make_env()
-    step_s = float(env.step_dt)
+def build_fixture(task: str = TASK) -> dict:
+    env = make_env(task)
+    decimation = env.action_manager.get_term("nav").decimation
+    step_s = float(env.step_dt) * decimation  # the spacing of the ten history entries: a policy tick
     robot = env.scene["robot"]
     servo = [n for n in robot.joint_names if not n.startswith("passive_")]
     default = robot.data.default_joint_pos[0, [robot.joint_names.index(n) for n in servo]]
@@ -199,7 +212,7 @@ def build_fixture() -> dict:
     env.close()
     return {
         "source": "microduck-nav src/microduck_nav/obs_parity.py: the task's own observation functions on a 1-env CPU env",
-        "task": TASK, "step_s": step_s, "history": TOF_HISTORY, "joints": servo, "default_pose": default.tolist(),
+        "task": task, "step_s": step_s, "policy_decimation": decimation, "walker_step_s": float(env.step_dt), "history": TOF_HISTORY, "joints": servo, "default_pose": default.tolist(),
         "zone_axial_factor": zone_directions("equal_angle")[:, 0].tolist(),
         "layout": {"policy_terms": list(POLICY_TERMS), "tof_terms": ["ranges_and_validity", "age"], "actor_groups": ["policy", "tof"]},
         "tolerance": 1e-6, "states": rows,

@@ -13,12 +13,13 @@ from pathlib import Path
 from mjlab.rl import MjlabOnPolicyRunner, RslRlOnPolicyRunnerCfg
 from mjlab.rl.config import RslRlModelCfg, RslRlPpoAlgorithmCfg
 
+from microduck_nav.action_repeat import ActionRepeatVecEnv
 from microduck_nav.nav_export import export_actor
 
 BETA_HEAD = {"class_name": "microduck_nav.beta_head:MicroDuckBrakingBeta", "forward_braking_only": False}
 
 
-def make_rl_cfg(experiment: str = "microduck_nav") -> RslRlOnPolicyRunnerCfg:
+def make_rl_cfg(experiment: str = "microduck_nav", policy_decimation: int = 1) -> RslRlOnPolicyRunnerCfg:
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(hidden_dims=(128, 128), activation="tanh", obs_normalization=True, distribution_cfg=dict(BETA_HEAD)),
         critic=RslRlModelCfg(hidden_dims=(128, 128), activation="tanh", obs_normalization=True),
@@ -31,7 +32,7 @@ def make_rl_cfg(experiment: str = "microduck_nav") -> RslRlOnPolicyRunnerCfg:
             num_mini_batches=4,
             learning_rate=3e-4,
             schedule="fixed",
-            gamma=0.998,
+            gamma=0.998**policy_decimation,  # one policy step is policy_decimation walker steps: the same discount per second
             lam=0.95,
             desired_kl=0.01,
             max_grad_norm=1.0,
@@ -49,7 +50,14 @@ def make_rl_cfg(experiment: str = "microduck_nav") -> RslRlOnPolicyRunnerCfg:
 
 
 class NavOnPolicyRunner(MjlabOnPolicyRunner):
-    """Saves the checkpoint and, next to it, the actor as (1, 1343) -> (1, 3) ONNX."""
+    """Saves the checkpoint and, next to it, the actor as (1, 1343) -> (1, 3) ONNX. A task whose policy acts every N > 1
+    walker steps is trained through ActionRepeatVecEnv, so PPO sees one transition per policy action."""
+
+    def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
+        decimation = env.unwrapped.cfg.actions["nav"].policy_decimation
+        if decimation > 1:
+            env = ActionRepeatVecEnv(env, decimation)
+        super().__init__(env, train_cfg, log_dir, device)
 
     def save(self, path: str, infos=None) -> None:
         super().save(path, infos)
