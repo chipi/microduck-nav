@@ -6,7 +6,10 @@ import onnxruntime as ort
 import pytest
 import torch
 
-from microduck_nav.nav_export import build_actor, export_actor
+import types
+
+from microduck_nav.nav_export import OBS_LAYOUT, build_actor, export_actor, nav_metadata
+from microduck_nav.rl_cfg import runner_metadata
 
 OBS = 1343
 
@@ -174,3 +177,34 @@ def test_forward_braking_only_range():
     assert (a[:, 1:].abs() <= 1).all()
     mean = actor(obs)
     assert (mean[:, 0] <= 0).all()
+
+
+def props(path):
+    return {p.key: p.value for p in onnx.load(str(path)).metadata_props}
+
+
+def test_export_carries_the_rate_and_lateral_limit(actor, tmp_path):
+    path = tmp_path / "meta.onnx"
+    export_actor(actor, path, nav_metadata("Mjlab-Nav-Deploy-MicroDuck", 0.1, 0.0))
+    assert props(path) == {
+        "task": "Mjlab-Nav-Deploy-MicroDuck",
+        "policy_step_s": "0.1",
+        "lateral_limit": "0.0",
+        "obs_layout": OBS_LAYOUT,
+    }
+    sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    assert sess.run(None, {"obs": np.zeros((1, OBS), np.float32)})[0].shape == (1, 3)
+
+
+def test_export_without_metadata_has_none(actor, tmp_path):
+    path = tmp_path / "plain.onnx"
+    export_actor(actor, path)
+    assert props(path) == {}
+
+
+def test_metadata_follows_the_task_settings():
+    full = types.SimpleNamespace(policy_decimation=1, limits=(0.35, 0.12, 0.75))
+    deploy = types.SimpleNamespace(policy_decimation=5, limits=(0.35, 0.0, 0.75))
+    assert runner_metadata(full, 0.02, "microduck_nav") == nav_metadata("Mjlab-Nav-MicroDuck", 0.02, 0.12)
+    assert runner_metadata(deploy, 0.02, "microduck_nav_deploy") == nav_metadata("Mjlab-Nav-Deploy-MicroDuck", 0.1, 0.0)
+    assert runner_metadata(deploy, 0.02, "microduck_nav_deploy")["policy_step_s"] == "0.1"

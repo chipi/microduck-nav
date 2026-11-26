@@ -14,7 +14,7 @@ from mjlab.rl import MjlabOnPolicyRunner, RslRlOnPolicyRunnerCfg
 from mjlab.rl.config import RslRlModelCfg, RslRlPpoAlgorithmCfg
 
 from microduck_nav.action_repeat import ActionRepeatVecEnv
-from microduck_nav.nav_export import export_actor
+from microduck_nav.nav_export import export_actor, nav_metadata
 
 BETA_HEAD = {"class_name": "microduck_nav.beta_head:MicroDuckBrakingBeta", "forward_braking_only": False}
 
@@ -49,12 +49,26 @@ def make_rl_cfg(experiment: str = "microduck_nav", policy_decimation: int = 1) -
     )
 
 
+EXPERIMENT_TASK = {
+    "microduck_nav": "Mjlab-Nav-MicroDuck",
+    "microduck_nav_one_wall": "Mjlab-Nav-OneWall-MicroDuck",
+    "microduck_nav_deploy": "Mjlab-Nav-Deploy-MicroDuck",
+}
+
+
+def runner_metadata(nav_cfg, step_dt: float, experiment: str) -> dict[str, str]:
+    """The ONNX metadata of a run: the task (by its experiment name), a policy step and the residual's lateral bound."""
+    return nav_metadata(EXPERIMENT_TASK.get(experiment, experiment), step_dt * nav_cfg.policy_decimation, nav_cfg.limits[1])
+
+
 class NavOnPolicyRunner(MjlabOnPolicyRunner):
     """Saves the checkpoint and, next to it, the actor as (1, 1343) -> (1, 3) ONNX. A task whose policy acts every N > 1
     walker steps is trained through ActionRepeatVecEnv, so PPO sees one transition per policy action."""
 
     def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
-        decimation = env.unwrapped.cfg.actions["nav"].policy_decimation
+        nav_cfg = env.unwrapped.cfg.actions["nav"]
+        decimation = nav_cfg.policy_decimation
+        self._metadata = runner_metadata(nav_cfg, env.unwrapped.step_dt, train_cfg.get("experiment_name", ""))
         if decimation > 1:
             env = ActionRepeatVecEnv(env, decimation)
         super().__init__(env, train_cfg, log_dir, device)
@@ -62,6 +76,6 @@ class NavOnPolicyRunner(MjlabOnPolicyRunner):
     def save(self, path: str, infos=None) -> None:
         super().save(path, infos)
         try:
-            export_actor(self.alg.get_policy(), Path(path).with_suffix(".onnx"))
+            export_actor(self.alg.get_policy(), Path(path).with_suffix(".onnx"), self._metadata)
         except Exception as e:  # training must not stop on an export problem
             print(f"[WARN] ONNX export failed (training continues): {e}")

@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import onnx
 import torch
 from rsl_rl.models import MLPModel
 from tensordict import TensorDict
 
 OBS_DIM = 1343
 GROUP = "policy"
+OBS_LAYOUT = "nav-1343-v1"  # the 1343-wide actor input as obs_parity.py builds it; bump when a slot moves
 
 
 def build_actor(
@@ -35,7 +37,17 @@ def build_actor(
     )
 
 
-def export_actor(model: MLPModel, path) -> Path:
+def nav_metadata(task: str, policy_step_s: float, lateral_limit: float) -> dict[str, str]:
+    """What a deployer needs to run the model as it trained: the spacing of its ten history entries and the lateral bound."""
+    return {
+        "task": task,
+        "policy_step_s": repr(round(float(policy_step_s), 6)),
+        "lateral_limit": repr(round(float(lateral_limit), 6)),
+        "obs_layout": OBS_LAYOUT,
+    }
+
+
+def export_actor(model: MLPModel, path, metadata: dict[str, str] | None = None) -> Path:
     """Same settings as mjlab's runner export (opset 18, legacy exporter, static batch of 1)."""
     path = Path(path)
     os.makedirs(path.parent, exist_ok=True)
@@ -52,4 +64,10 @@ def export_actor(model: MLPModel, path) -> Path:
         dynamic_axes={},
         dynamo=False,
     )
+    if metadata:
+        proto = onnx.load(str(path))
+        for key, value in metadata.items():
+            entry = proto.metadata_props.add()
+            entry.key, entry.value = key, value
+        onnx.save(proto, str(path))
     return path
