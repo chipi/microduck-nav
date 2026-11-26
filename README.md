@@ -6,7 +6,8 @@ research R6 of the robotics-lab programme. The state today: the CPU checks C1 to
 is written and registered with mjlab (`Mjlab-Nav-MicroDuck`, and `Mjlab-Nav-OneWall-MicroDuck` for milestone M1);
 nothing has run on a GPU yet. The ToF zone grid is a config option, `grid`: `mixed` (the default; each environment
 draws Pollen's equal-angle or NVIDIA's pinhole grid at reset), `equal_angle` or `pinhole`.
-The DGX command for M1 is in `docs/M1.md`.
+The DGX command for M1 is in `docs/M1.md`. M2 (`docs/M2.md`) has two: `Mjlab-Nav-MicroDuck` (50 Hz, NVIDIA-faithful) and
+`Mjlab-Nav-Deploy-MicroDuck` (a 10 Hz policy and no lateral residual, matched to robotics-lab's navigator).
 
 ## Where it comes from
 

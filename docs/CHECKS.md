@@ -15,6 +15,7 @@ Numbers below come from `scripts/report_numbers.py` and `scripts/walker_speed_ta
 | C5 residual action | PASS |
 | C6 task: scene, sensor, observation, rewards, terminations | PASS |
 | C7 8 envs x 50 PPO iterations on CPU | PASS (2.6 s per iteration) |
+| C7 deploy task, 8 envs x 20 PPO iterations on CPU | PASS (10.9 s per iteration, five walker steps per policy step; `docs/M2.md`) |
 | M1 dry run on CPU, one wall | PASS (command works end to end; the 5-iteration policy does not stop, as expected) |
 
 ## Answers to the plan's open questions
