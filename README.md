@@ -10,6 +10,7 @@ The DGX command for M1 is in `docs/M1.md`. M2 (`docs/M2.md`) has two: `Mjlab-Nav
 `Mjlab-Nav-Deploy-MicroDuck` (a 10 Hz policy and no lateral residual, matched to robotics-lab's navigator).
 R7 (`docs/R7.md`) is `Mjlab-Nav-Ours-MicroDuck`: the deploy task over a pool of robotics-lab's own challenge scenes (one family held
 out) with the navigator's reflex and cliff stop in the loop, each intervention costing reward.
+M2d (`docs/M2D.md`) is `Mjlab-Nav-Deploy-Room-MicroDuck`: the deploy task with a room of four resizable wall slots round each scene, so that training sees the far walls the navigator's rooms have.
 
 ## Where it comes from
 

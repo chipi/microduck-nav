@@ -43,6 +43,44 @@ class NavigationCommandCfg(CommandTermCfg):
         return NavigationCommand(self, env)
 
 
+def destination_direction(field, fresh: torch.Tensor, position: torch.Tensor, heading: torch.Tensor, distance: float) -> torch.Tensor:
+    """The unit direction of the destination of the environments `fresh`, from the layout the field holds and the robot (NVIDIA's rule)."""
+    forward = torch.zeros_like(position)
+    forward[:, 0] = 1.0
+    direction = rot2(heading, forward)
+    layout = field.layout[fresh]
+    names = layouts.LAYOUT_NAMES
+    n = len(fresh)
+    rows = torch.arange(n, device=position.device)
+    slots = field.pos[fresh]
+    ring = layout == names.index("ring")
+    direction[ring] = (slots[:, SLOT_INDEX["obstacle"]] - position)[ring]
+    front = slots[rows, field.front_index[fresh]] - position
+    for name in ("barrier", "blocked", "corner"):
+        mask = layout == names.index(name)
+        direction[mask] = front[mask]
+    passage = layout == names.index("passage")
+    midpoint = 0.5 * (slots[:, SLOT_INDEX["wall_left"]] + slots[:, SLOT_INDEX["wall_right"]])
+    direction[passage] = (midpoint - position)[passage]
+    slalom = layout == names.index("slalom")
+    local = torch.stack(
+        [rot2(heading, slots[:, SLOT_INDEX[s]] - position, inverse=True) for s in ("crate", "tall_box", "cylinder")], dim=1
+    )
+    last = local[:, :, 0].argmax(dim=1)
+    last_y = local[rows, last, 1]
+    local_goal = forward * distance
+    local_goal[:, 1] = torch.where(last_y >= 0.0, -0.5, 0.5)
+    direction[slalom] = rot2(heading, local_goal)[slalom]
+    direction[:, 2] = 0.0
+    local_direction = rot2(heading, direction, inverse=True)
+    minimum_forward = 1e-3 * direction.norm(dim=-1).clamp_min(1.0)
+    adjust = local_direction[:, 0] < minimum_forward
+    local_direction[:, 0] = torch.maximum(local_direction[:, 0].abs(), minimum_forward)
+    direction[adjust] = rot2(heading, local_direction)[adjust]
+    direction /= direction.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    return direction
+
+
 class NavigationCommand(CommandTerm):
     cfg: NavigationCommandCfg
 
@@ -73,43 +111,10 @@ class NavigationCommand(CommandTerm):
         """Fixed forward world goals; read from qpos, since derived poses are stale during a reset."""
         field = get_field(self._env)
         position, quat = root_pose(self._env, fresh, self.cfg.asset_name)
-        heading = yaw_of(quat)
-        forward = torch.zeros_like(position)
-        forward[:, 0] = 1.0
-        direction = rot2(heading, forward)
-        layout = field.layout[fresh]
-        names = layouts.LAYOUT_NAMES
-        n = len(fresh)
-        rows = torch.arange(n, device=self.device)
-        slots = field.pos[fresh]
-        ring = layout == names.index("ring")
-        direction[ring] = (slots[:, SLOT_INDEX["obstacle"]] - position)[ring]
-        front = slots[rows, field.front_index[fresh]] - position
-        for name in ("barrier", "blocked", "corner"):
-            mask = layout == names.index(name)
-            direction[mask] = front[mask]
-        passage = layout == names.index("passage")
-        midpoint = 0.5 * (slots[:, SLOT_INDEX["wall_left"]] + slots[:, SLOT_INDEX["wall_right"]])
-        direction[passage] = (midpoint - position)[passage]
-        slalom = layout == names.index("slalom")
-        local = torch.stack(
-            [rot2(heading, slots[:, SLOT_INDEX[s]] - position, inverse=True) for s in ("crate", "tall_box", "cylinder")], dim=1
-        )
-        last = local[:, :, 0].argmax(dim=1)
-        last_y = local[rows, last, 1]
-        local_goal = forward * self.cfg.destination_distance
-        local_goal[:, 1] = torch.where(last_y >= 0.0, -0.5, 0.5)
-        direction[slalom] = rot2(heading, local_goal)[slalom]
-        direction[:, 2] = 0.0
-        local_direction = rot2(heading, direction, inverse=True)
-        minimum_forward = 1e-3 * direction.norm(dim=-1).clamp_min(1.0)
-        adjust = local_direction[:, 0] < minimum_forward
-        local_direction[:, 0] = torch.maximum(local_direction[:, 0].abs(), minimum_forward)
-        direction[adjust] = rot2(heading, local_direction)[adjust]
-        direction /= direction.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        direction = destination_direction(field, fresh, position, yaw_of(quat), self.cfg.destination_distance)
         self.destination_w[fresh] = position + self.cfg.destination_distance * direction
         low, high = self.cfg.speed_range
-        self.destination_speed[fresh] = torch.empty(n, device=self.device).uniform_(low, high)
+        self.destination_speed[fresh] = torch.empty(len(fresh), device=self.device).uniform_(low, high)
 
     def _update_command(self) -> None:
         pos = self.robot.data.root_link_pos_w

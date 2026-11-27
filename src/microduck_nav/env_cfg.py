@@ -28,9 +28,11 @@ from microduck_nav.commands import NavigationCommandCfg, PoolNavigationCommandCf
 from microduck_nav.field import reset_obstacle_field, reset_pool_scene
 from microduck_nav.layouts import NVIDIA_WEIGHTS
 from microduck_nav.obstacles import (
-    BODY, POOL_SLOTS, SLOT_NAMES, exclude_pool_contacts, exclude_static_contacts, pool_slot_entities, pool_slot_names, slot_entities,
+    BODY, POOL_SLOTS, SLOT_NAMES, exclude_pool_contacts, exclude_room_task_contacts, exclude_static_contacts, pool_slot_entities,
+    pool_slot_names, room_slot_entities, room_slot_names, slot_entities,
 )
 from microduck_nav.pool import pool_path
+from microduck_nav.room import reset_room
 from microduck_nav.tick_history import TOF_HISTORY
 from microduck_nav.tof_sensor import ToFSensorCfg
 
@@ -79,6 +81,14 @@ class NavOptions:
     holdout_family: str = "doorway"  # R7a: pool layouts left out of training, comma separated; none for nothing
     pool_slots: int = POOL_SLOTS  # R7a: boxes a scene can hold; a pool item with more is skipped and counted
     guards: bool = False  # R7b: the navigator's reflex and cliff stop between the command and the walker, and their cost
+    room: bool = False  # M2d: four wall slots round each scene, a room (docs/M2D.md); NVIDIA's layouts only, not with the pool
+
+
+def slot_names(opts: NavOptions) -> tuple[str, ...]:
+    """The obstacle slots of a task, in the order of its field."""
+    if opts.pool:
+        return pool_slot_names(opts.pool_slots)
+    return SLOT_NAMES + room_slot_names() if opts.room else SLOT_NAMES
 
 
 def _proprio_group(base: ManagerBasedRlEnvCfg) -> dict[str, ObservationTermCfg]:
@@ -146,7 +156,7 @@ def _sensors(base: ManagerBasedRlEnvCfg, opts: NavOptions, decimation: int):
             num_slots=1,
             history_length=decimation,
         )
-        for name in (pool_slot_names(opts.pool_slots) if opts.pool else SLOT_NAMES)
+        for name in slot_names(opts)
     )
     tof = ToFSensorCfg(
         name=SENSOR,
@@ -170,9 +180,12 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
     cfg.metrics = {}
     cfg.scene.num_envs = 4096
     cfg.scene.env_spacing = ENV_SPACING
-    cfg.scene.entities = {**cfg.scene.entities, **(pool_slot_entities(opts.pool_slots) if opts.pool else slot_entities())}
+    if opts.room and opts.pool:
+        raise ValueError("a room is NVIDIA's layouts' (the pool's scenes bring their own walls)")
+    slots = pool_slot_entities(opts.pool_slots) if opts.pool else {**slot_entities(), **(room_slot_entities() if opts.room else {})}
+    cfg.scene.entities = {**cfg.scene.entities, **slots}
     cfg.scene.sensors = _sensors(cfg, opts, cfg.decimation)
-    cfg.scene.spec_fn = exclude_pool_contacts if opts.pool else exclude_static_contacts
+    cfg.scene.spec_fn = exclude_pool_contacts if opts.pool else exclude_room_task_contacts if opts.room else exclude_static_contacts
     cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 200)
     cfg.sim.contact_sensor_maxmatch = 128  # a robot overlapping a wall matches more than the default 64 contacts
 
@@ -214,6 +227,8 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
                 "one_wall_distance_range": opts.one_wall_distance_range,
             },
         )
+    if opts.room:
+        events["room"] = EventTermCfg(func=reset_room, mode="reset", params={})  # after the field: it reads the goal and the obstacles it placed
     cfg.events = events
 
     cfg.rewards = {
@@ -243,7 +258,7 @@ def make_nav_env_cfg(opts: NavOptions | None = None, play: bool = False) -> Mana
         "obstacle_collision": TerminationTermCfg(
             func=terms.obstacle_collision,
             time_out=False,
-            params={"threshold": opts.collision_threshold, "slots": pool_slot_names(opts.pool_slots) if opts.pool else SLOT_NAMES},
+            params={"threshold": opts.collision_threshold, "slots": slot_names(opts)},
         ),
         "field_boundary": TerminationTermCfg(func=terms.field_boundary, time_out=True, params={"extent": FIELD_EXTENT}),
     }

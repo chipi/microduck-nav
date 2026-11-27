@@ -129,10 +129,38 @@ def pool_slot_entities(count: int = POOL_SLOTS) -> dict[str, EntityCfg]:
     return {name: EntityCfg(spec_fn=pool_slot_spec, init_state=park) for name in pool_slot_names(count)}
 
 
-def exclude_pool_contacts(spec: mujoco.MjSpec) -> None:
-    """The pool slots collide with the robot only: not with the floor, not with each other."""
-    bodies = [b.name for b in spec.bodies if b.name.startswith(POOL_PREFIX) and b.name.endswith(f"/{BODY}")]
+def exclude_box_slot_contacts(spec: mujoco.MjSpec, prefix: str, others=()) -> None:
+    """Resizable box slots named `prefix`* collide with the robot only: not with the floor, not with each other, not with `others`
+    (full body names)."""
+    bodies = [b.name for b in spec.bodies if b.name.startswith(prefix) and b.name.endswith(f"/{BODY}")]
     for i, a in enumerate(bodies):
         spec.add_exclude(name=f"{a.split('/')[0]}_floor", bodyname1="terrain", bodyname2=a)
         for b in bodies[i + 1 :]:
             spec.add_exclude(name=f"{a.split('/')[0]}_{b.split('/')[0]}", bodyname1=a, bodyname2=b)
+        for b in others:
+            spec.add_exclude(name=f"{a.split('/')[0]}_{b.split('/')[0]}", bodyname1=a, bodyname2=b)
+
+
+def exclude_pool_contacts(spec: mujoco.MjSpec) -> None:
+    """The pool slots collide with the robot only: not with the floor, not with each other."""
+    exclude_box_slot_contacts(spec, POOL_PREFIX)
+
+
+# M2d (docs/M2D.md): four wall slots, the pool's resizable unit box, beside NVIDIA's eight; a room's four sides.
+ROOM_PREFIX = "room_"
+ROOM_WALLS = 4
+
+
+def room_slot_names() -> tuple[str, ...]:
+    return tuple(f"{ROOM_PREFIX}{i}" for i in range(ROOM_WALLS))
+
+
+def room_slot_entities() -> dict[str, EntityCfg]:
+    park = EntityCfg.InitialStateCfg(pos=(0.0, 0.0, PARK_Z))
+    return {name: EntityCfg(spec_fn=pool_slot_spec, init_state=park) for name in room_slot_names()}
+
+
+def exclude_room_task_contacts(spec: mujoco.MjSpec) -> None:
+    """NVIDIA's slots among themselves as before, each room wall against the robot only."""
+    exclude_static_contacts(spec)
+    exclude_box_slot_contacts(spec, ROOM_PREFIX, others=[f"{s.name}/{BODY}" for s in SLOTS])

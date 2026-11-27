@@ -115,7 +115,9 @@ class NavigationObstacleBypass(ManagerTermBase):
 
     def __init__(self, cfg, env):
         super().__init__(env)
-        centers, rotations, self._half_sizes, self._radii = get_field(env).geometry()
+        field = get_field(env)
+        centers, rotations, self._half_sizes, self._radii = field.geometry()
+        self._blocks = getattr(field, "blocks_request", None)  # (k,) the slots that can be the obstacle in the way; None: all
         self._per_env = self._half_sizes.ndim == 3  # the pool's boxes differ per environment: held with the centres, refreshed at reset
         if self._per_env:
             self._half_sizes, self._radii = self._half_sizes.clone(), self._radii.clone()
@@ -227,6 +229,8 @@ class NavigationObstacleBypass(ManagerTermBase):
         start_along = previous_local.gather(-1, entry_axis[..., None]).squeeze(-1) * sign
         entry_half = expanded.expand_as(previous_local).gather(-1, entry_axis[..., None]).squeeze(-1)
         ahead &= start_along < -entry_half
+        if self._blocks is not None:
+            ahead &= self._blocks
         nearest = torch.where(ahead, entry_time, torch.inf).argmin(dim=-1)
         self._target = torch.where(self._pending, nearest, self._target)
         self._axis = torch.where(self._pending, entry_axis[self._rows, nearest], self._axis)

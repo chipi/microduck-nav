@@ -54,6 +54,7 @@ EXPERIMENT_TASK = {
     "microduck_nav_one_wall": "Mjlab-Nav-OneWall-MicroDuck",
     "microduck_nav_deploy": "Mjlab-Nav-Deploy-MicroDuck",
     "microduck_nav_ours": "Mjlab-Nav-Ours-MicroDuck",
+    "microduck_nav_deploy_room": "Mjlab-Nav-Deploy-Room-MicroDuck",
 }
 
 

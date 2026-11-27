@@ -9,6 +9,7 @@ FULL = "Mjlab-Nav-MicroDuck"
 ONE_WALL = "Mjlab-Nav-OneWall-MicroDuck"
 DEPLOY = "Mjlab-Nav-Deploy-MicroDuck"
 OURS = "Mjlab-Nav-Ours-MicroDuck"
+DEPLOY_ROOM = "Mjlab-Nav-Deploy-Room-MicroDuck"
 
 # Milestone M1: one wall across the approach, no impairments.
 _ONE_WALL = NavOptions(layout="one_wall", impairments=False)
@@ -20,11 +21,15 @@ _DEPLOY = NavOptions(policy_decimation=DEPLOY_DECIMATION, lateral_limit=0.0)
 # reflex and cliff stop in the loop and a cost for each time one fires.
 _OURS = NavOptions(policy_decimation=DEPLOY_DECIMATION, lateral_limit=0.0, pool=True, holdout_family="doorway", guards=True)
 
+# M2d (docs/M2D.md): the deploy task with a room round each scene: the far walls the navigator's rooms have and the open training fields do not.
+_DEPLOY_ROOM = NavOptions(policy_decimation=DEPLOY_DECIMATION, lateral_limit=0.0, room=True)
+
 for _task, _opts, _name in (
     (FULL, NavOptions(), "microduck_nav"),
     (ONE_WALL, _ONE_WALL, "microduck_nav_one_wall"),
     (DEPLOY, _DEPLOY, "microduck_nav_deploy"),
     (OURS, _OURS, "microduck_nav_ours"),
+    (DEPLOY_ROOM, _DEPLOY_ROOM, "microduck_nav_deploy_room"),
 ):
     register_mjlab_task(
         task_id=_task,

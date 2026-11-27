@@ -14,7 +14,7 @@ import torch
 from mjlab.managers.event_manager import requires_model_fields
 
 from microduck_nav import layouts, pool as pools
-from microduck_nav.obstacles import POOL_BOX, POOL_PREFIX, POOL_SLOTS, SLOT_INDEX, SLOT_NAMES, footprints
+from microduck_nav.obstacles import POOL_BOX, POOL_PREFIX, POOL_SLOTS, ROOM_PREFIX, SLOT_INDEX, SLOT_NAMES, footprints, room_slot_names
 
 
 def yaw_of(quat_wxyz: torch.Tensor) -> torch.Tensor:
@@ -39,10 +39,12 @@ FAR = 50.0  # where, from its environment's origin, the rewards' geometry puts a
 
 
 def slot_names_of(env) -> tuple[str, ...]:
-    """The pool's slots when the scene has them, else NVIDIA's eight."""
+    """The pool's slots when the scene has them, else NVIDIA's eight, and the room's four after them when the scene has those."""
     entities = getattr(getattr(env, "scene", None), "entities", ())  # a bare env of the tests has no scene
     names = tuple(n for n in entities if n.startswith(POOL_PREFIX))
-    return names or SLOT_NAMES
+    if names:
+        return names
+    return SLOT_NAMES + room_slot_names() if any(n.startswith(ROOM_PREFIX) for n in entities) else SLOT_NAMES
 
 
 class ObstacleField:
@@ -51,12 +53,27 @@ class ObstacleField:
         self.num_envs = n
         self.names = slot_names_of(env)
         k = len(self.names)
-        self.pool = self.names != SLOT_NAMES
+        self.pool = self.names[0].startswith(POOL_PREFIX)
+        self.room = not self.pool and len(self.names) > len(SLOT_NAMES)  # NVIDIA's eight and a room's four walls (M2d)
         self.pos = torch.zeros(n, k, 3, device=dev)
         self.yaw = torch.zeros(n, k, device=dev)
         self.layout = torch.full((n,), -1, dtype=torch.long, device=dev)
         self.front_index = torch.full((n,), SLOT_INDEX["obstacle"], dtype=torch.long, device=dev)
-        if self.pool:
+        self.blocks_request = torch.ones(k, dtype=torch.bool, device=dev)  # the slots the bypass reward may take as the obstacle in the way
+        if self.room:
+            first = len(SLOT_NAMES)
+            self.pos[:, first:, :2] = env.scene.env_origins[:, None, :2] + FAR
+            half, radii = footprints(dev)
+            self.half_sizes, self.radii = torch.zeros(n, k, 2, device=dev), torch.zeros(n, k, device=dev)
+            self.half_sizes[:, :first], self.radii[:, :first] = half, radii
+            self.blocks_request[first:] = False  # a wall round the field is not an obstacle to get past
+            self.geom_ids = torch.tensor([int(env.scene[name].indexing.geom_ids[0]) for name in self.names[first:]], device=dev)
+            self.room_lo = torch.zeros(n, 2, device=dev)  # the inner corners in the robot's reset-heading frame; meaningful where built
+            self.room_hi = torch.zeros(n, 2, device=dev)
+            self.room_built = torch.zeros(n, dtype=torch.bool, device=dev)
+            self.room_counts = torch.zeros(3, dtype=torch.long, device=dev)  # rooms built, of them drawn again to fit, environments without a room
+            self.room_seen = 0  # resets so far
+        elif self.pool:
             # the footprints differ per environment: (n, k, 2) half sides and (n, k) radii (none: boxes only)
             self.pos[:, :, :2] = env.scene.env_origins[:, None, :2] + FAR
             self.half_sizes, self.radii = torch.zeros(n, k, 2, device=dev), torch.zeros(n, k, device=dev)
@@ -137,9 +154,9 @@ def reset_obstacle_field(
     )
     field.layout[ids] = layout_ids
     field.front_index[ids] = front
-    field.pos[ids, :, :2] = xy
+    field.pos[ids, : len(SLOT_NAMES), :2] = xy
     field.pos[ids, :, 2] = env.scene.env_origins[ids, 2:3]
-    field.yaw[ids] = yaw
+    field.yaw[ids, : len(SLOT_NAMES)] = yaw
     for i, name in enumerate(SLOT_NAMES):
         pose = torch.zeros(len(ids), 7, device=env.device)
         pose[:, :3] = field.pos[ids, i]
@@ -171,6 +188,23 @@ def place_boxes(
     zc = origins[:, 2:3] + torch.where(real, 0.5 * (z0 + z1), torch.full_like(x, POOL_BOX))
     half = torch.where(real[..., None], local[..., 3:5], torch.full_like(local[..., 3:5], POOL_BOX))
     return {"xy": torch.stack((x, y), dim=-1), "yaw": yaw, "zc": zc, "hz": hz, "half": half, "real": real}
+
+
+def write_box_slots(env, ids, names, geom_ids, xy, zc, yaw, half, hz) -> None:
+    """Resize and place resizable box slots in the environments `ids`: per slot the centre (xy, zc), the yaw, the half sides and the half
+    height; the pool's slots and the room's walls are written by this. The model's geom_size must be per world (requires_model_fields)."""
+    size = torch.cat((half, hz[..., None]), dim=-1)  # (m, k, 3): a box geom's half sides
+    rows, cols = torch.meshgrid(ids.to(torch.int), geom_ids.to(torch.int), indexing="ij")
+    model = env.sim.model
+    model.geom_size[rows, cols] = size
+    model.geom_rbound[rows, cols] = size.norm(dim=-1)  # the broadphase's bounds, as mjlab's dr.geom_size keeps them for a box
+    model.geom_aabb[rows, cols, 1] = size
+    for i, name in enumerate(names):
+        pose = torch.zeros(len(ids), 7, device=env.device)
+        pose[:, :2] = xy[:, i]
+        pose[:, 2] = zc[:, i]
+        pose[:, 3:7] = quat_from_yaw(yaw[:, i])
+        env.scene[name].write_mocap_pose_to_sim(pose, env_ids=ids)
 
 
 @requires_model_fields("geom_size", "geom_rbound", "geom_aabb")
@@ -212,15 +246,4 @@ def reset_pool_scene(
         (pos[:, 0] + c * data.goal[pick, 0] - s * data.goal[pick, 1], pos[:, 1] + s * data.goal[pick, 0] + c * data.goal[pick, 1]), dim=-1
     )
 
-    size = torch.cat((placed["half"], placed["hz"][..., None]), dim=-1)  # (m, k, 3): a box geom's half sides
-    rows, cols = torch.meshgrid(ids.to(torch.int), field.geom_ids.to(torch.int), indexing="ij")
-    model = env.sim.model
-    model.geom_size[rows, cols] = size
-    model.geom_rbound[rows, cols] = size.norm(dim=-1)  # the broadphase's bounds, as mjlab's dr.geom_size keeps them for a box
-    model.geom_aabb[rows, cols, 1] = size
-    for i, name in enumerate(field.names):
-        pose = torch.zeros(len(ids), 7, device=env.device)
-        pose[:, :2] = xy[:, i]
-        pose[:, 2] = placed["zc"][:, i]
-        pose[:, 3:7] = quat_from_yaw(placed["yaw"][:, i])
-        env.scene[name].write_mocap_pose_to_sim(pose, env_ids=ids)
+    write_box_slots(env, ids, field.names, field.geom_ids, xy, placed["zc"], placed["yaw"], placed["half"], placed["hz"])

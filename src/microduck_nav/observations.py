@@ -37,7 +37,7 @@ def obstacle_clearance(env) -> torch.Tensor:
     pos = env.scene["robot"].data.root_link_pos_w
     field = get_field(env)
     clearance = nav_math.obstacle_clearances(pos, field.geometry())
-    return clearance.clamp_max(TOF_RANGE) if field.pool else clearance  # a parked or overhead pool slot is far: no further than the sensor sees
+    return clearance.clamp_max(TOF_RANGE) if field.pool or field.room else clearance  # a parked or overhead slot is far: no further than the sensor sees
 
 
 def held_action(env) -> torch.Tensor:
