@@ -1,9 +1,7 @@
 # Milestone M2d: the deploy task with a room round each scene
 
 `Mjlab-Nav-Deploy-Room-MicroDuck` is `Mjlab-Nav-Deploy-MicroDuck` (M2b, `docs/M2.md`) with four wall slots forming a rectangle
-round the field at every reset. Nothing else changes: `policy_decimation` 5, `lateral_limit` 0, the rewards and their weights,
-the impairments, NVIDIA's layouts and their eight obstacle slots, the terminations, the 20 s episodes, the 1343-wide actor input
-and its ONNX. `NavOptions(room=True)` is the one switch; it is exclusive with `pool=True` (R7's scenes bring their own walls).
+round the field at every reset. Walls are the only variable against M2b (what differs, complete, is the list below). `NavOptions(room=True)` is the one switch; it is exclusive with `pool=True` (R7's scenes bring their own walls).
 
 ## Why
 
@@ -28,11 +26,13 @@ M2d does **not** touch the other half of the diagnosis: training's impairment dr
   - The room is a rectangle in the robot's reset-heading frame (the frame NVIDIA's layouts are drawn in), axis-aligned there.
   - It must hold the start and the goal with 0.3 m (`DUCK_MARGIN`) and every one of NVIDIA's eight obstacles, in their real
     footprints (box rotated by its yaw, circle by its radius), with 0.05 m (`OBSTACLE_MARGIN`).
-  - Each side is drawn uniform in `ROOM_SIDE_RANGE = (1.6, 6.0)` m, the inner side. A room that does not hold the scene is drawn again;
-    this is done in closed form (a side is uniform in `[max(need, 1.6), 6.0]`, the same distribution as rejection). The room's place
-    is uniform over where the scene stays inside.
-  - A scene wider than 6 m on an axis gets **no room**: its walls are parked as the pool parks a slot, and it is counted
-    (`field.room_counts` = rooms built, of them drawn again, environments without one; a line is printed every 100,000 resets).
+  - Each side is drawn uniform in `[max(need, 1.6), max(6.0, need + ROOM_SLACK)]` m, the inner side, where `need` is what the scene
+    holds on that axis and `ROOM_SLACK` = 0.5 m. A room never fails to hold the scene; a scene that needs more than 6 m gets a side that
+    grows to what it needs (uniform from `need` to `need + 0.5`). Every scene gets its four walls: there is no "no room" path and no counter
+    of one. The room's place is uniform over where the scene stays inside.
+  - The room's draws come from **its own generator** (`field.room_generator`, a `torch.Generator` seeded from the env's seed), never the
+    stream NVIDIA's layouts and the command draw from, so adding the room shifts no obstacle, start or goal draw
+    (`tests/test_m2d_same_draws.py`).
   - The goal is computed by `commands.destination_direction`, the NVIDIA rule moved out of `NavigationCommand._sample_destinations`
     unchanged, so the room and the command read the same goal.
 - Wall thickness 0.04 m and height 0.5 m, robotics-lab's: `labrunner.scene.wall(..., thick=0.04, height=0.5)`
@@ -40,11 +40,25 @@ M2d does **not** touch the other half of the diagnosis: training's impairment dr
   the outside of the inner sides, so the inner sides are the room's.
 - The walls are obstacles for **the sensor** (they are geoms, group 0, in every world's ray cast), **the collision termination**
   (`obstacle_collision` takes the four `contact_room_N` sensors with NVIDIA's eight; threshold 0.1 N as before) and **the reward
-  footprints** (`field.geometry()` is now `(n, 12, 2)` half sizes: approach, clearance risk, path clearance, the critic's obstacle
-  clearances, which are 12 wide instead of 8; the actor is untouched, 1343 -> 3).
+  footprints** (`field.geometry()` is `(n, 12, 2)` half sizes: the approach penalty, the clearance risk and the path clearance take all
+  twelve). That is what a wall physically is.
+- **The critic does not see the walls' clearance**: its `obstacle_clearance` input is NVIDIA's eight, exactly as in M2b
+  (`field.geometry(8)`), so a critic layout trained on M2b applies unchanged to M2d. The walls are in what the policy senses (the rays),
+  in what ends an episode and in what the rewards penalise; the privileged input is left as M2b has it so that walls are the only
+  variable. The actor is untouched (1343 -> 3).
 - One exception, on purpose: `barrier_bypass` ("pay once for passing the nearest obstacle blocking the initial request") never takes
   a room wall as that obstacle (`field.blocks_request`; `rewards.py`): a wall round the field cannot be passed, and a straight
   request toward the goal would otherwise name the far wall in every scene with a free path. For M2b and R7 the mask is all true.
+
+## What differs from M2b (complete)
+
+1. Four wall slots (`room_0` to `room_3`) round each scene, with a contact sensor each.
+2. The walls in the sensor's ray cast, in `obstacle_collision`, and in the reward footprints (the approach and clearance penalties).
+
+Nothing else: the critic's input (8 clearances), the actor (1343 -> 3), the rewards and weights, `barrier_bypass` (it never takes a wall as
+the obstacle in the way: its meaning is M2b's), the impairments, NVIDIA's layouts and their eight slots, the command, the terminations
+other than the walls' contacts, `policy_decimation` 5, the 20 s episodes, the limits. For a fixed seed M2d's eight obstacle poses, layout
+ids, start pose, and the command's goal and speed are bit-identical to M2b's (3 resets x 64 envs: `tests/test_m2d_same_draws.py`).
 
 ## Room-size ranges and where they come from
 
@@ -61,50 +75,51 @@ src/labrunner/challenges.py` at mission-control 8560dba; the evaluation sets' it
 
 Read plainly, the generator's rooms go from 2.4 to 4.6 m a side and its corridors down to 0.45 m. **1.6 m and 6.0 m are not
 generator values**: 1.6 is between the corridors and the smallest rooms, 6.0 is above the largest room (4.6 m). They are the task's
-stated range and are used as stated; if the generator's own range is wanted, change `ROOM_SIDE_RANGE`, and expect most scenes to get
-no room (below).
+stated range and are used as stated; if the generator's own range is wanted, change `ROOM_SIDE_RANGE`, and expect most rooms to grow
+past it (below).
 
-What the task really draws is narrower, because NVIDIA's eight obstacles stand within 2.6 m of the duck and rotate with its random
-heading. Over 4,224 resets of the task (128 envs, seed 11, the first and 32 more):
+What the task really draws is larger, because NVIDIA's eight obstacles stand within 2.6 m of the duck and rotate with its random
+heading, and some layouts park their props round the duck. **Room sides over 4,096 resets** (128 envs x 32, seed 11; 8,192 sides, both
+axes; `test_room_sizes_over_4096_resets`): **min 3.20 m, median 5.59 m, 90th percentile 6.23 m, max 6.80 m**. The sides above 6.0 m are
+the scenes that needed more than the range (they were 15.5% of resets with no room before this change); they are drawn in
+`[need, need + 0.5]`. No room smaller than 3.2 m is ever drawn with NVIDIA's layouts, though the sampler covers 1.6-6 m
+(`test_room_sides_stay_in_the_range...`: a small scene draws min 1.6, max 6.0, mean 3.8).
 
-- 3,571 got a room, all of them drawn again to fit (every scene needs more than 1.6 m); **653 (15.5%) got none**, the scene being
-  wider than 6 m: the layouts that park their props round the duck (`open` 54% of its draws, `barrier` 49%, `thin_low` 48%, `passage` 18%,
-  `corner` 36%, `blocked` 11%); `scattered`, 62% of all draws, never (0 of 2,622).
-- sides of the rooms built: min 3.20, 10th percentile 3.93, median 5.45, 90th 5.96, max 6.00 m; the short side's median 4.93 m, the
-  long side's 5.71 m. The farthest wall from the duck, median 3.28 m (max 5.64 m).
+## Checks (CPU, `uv run pytest -q -m "not slow"`: 235 passed)
 
-So the sampler covers 1.6-6 m (`test_room_sides_stay_in_the_range...`: a small scene draws min 1.6, max 6.0, mean 3.8), but with NVIDIA's
-layouts no room smaller than 3.2 m is ever built. Small rooms need a different layout set.
+`tests/test_m2d_same_draws.py` (red first: on 6476786 it fails at reset 0, `obstacle_xy differs from M2b's`: the room drew from the shared
+stream): for a fixed seed, over 3 resets x 64 envs, M2d's eight obstacle positions and yaws, the layout ids, the robot's start pose and
+the command's goal and speed are `torch.equal` to M2b's.
 
-## Checks (CPU, `uv run pytest -q -m "not slow"`: 232 passed)
+`tests/test_m2d_room.py`:
 
-`tests/test_m2d_room.py`, written first (against the commit before M2d the file fails at import: no `room_slot_names`, no task), then
-green:
-
-- the sensor reads a wall 3.0 m from it as 3.0 m (median of the zones that see it, +-0.2 m: the head is pitched);
+- the sensor reads a wall 3.0 m from it as 3.0 m (median of the zones that see it, +-0.2 m: the head is pitched); this test is
+  sensitive to the start (seed 3 misses 0.2 m at 6476786 too), the seed is 0;
 - a duck asked to walk into a wall 0.45 m ahead ends the episode as `obstacle_collision` (not `fell_over`); one with the wall 5 m ahead does not;
 - over 6 seeds x 64 envs x 2 resets the start, the goal (the command's own `destination_w`) and all eight obstacle footprints are inside
-  the room, with the margins; every reset is counted as built or not;
-- the sampler's range, the cut at the scene's size, the no-room case, the wall geometry (thickness 0.04, height 0.5, inner sides);
+  the room, with the margins; every reset is counted and every scene has a room of at least 1.6 m a side;
+- the sampler's range, the cut at the scene's size, a scene wider than 6 m (a side uniform in `[need, need + 0.5]`), the wall geometry
+  (thickness 0.04, height 0.5, inner sides);
 - a sample of 4,096 resets (128 envs x 32), rays as cast at the reset, impairments on: **return farther than 2 m that is not the
-  floor: M2d 61.1% of frames (6.59% of zones); M2b 2.1% (0.09% of zones)**;
+  floor: M2d 74.4% of frames (8.64% of zones); M2b 2.1% (0.09% of zones)** (before this change: 61.1% / 6.59%, with 15.5% of resets
+  open);
 - the task is M2b's with 12 slots: same observation groups (policy 53, tof 1290), rewards, decimation 5, limits (0.35, 0, 0.75); the
   wall's clearance is its distance minus the duck's radius; the bypass target is never a wall;
+- the critic's group has M2b's width and its `obstacle_clearance` is 8 wide, equal to the first eight of the twelve the rewards use;
 - `tests/test_m2b_unchanged.py`: M2b's observations (policy, tof, critic) for a fixed seed over 6 ticks hash to what they did before
-  M2d (sha256 taken at 4248b0e); the parity fixture (`test_obs_parity.py`), the C-tests and R7's tests are unchanged and green.
+  M2d (sha256 taken at 4248b0e, unchanged); the parity fixture (`test_obs_parity.py`), the C-tests and R7's tests are unchanged and green.
 
 C7, `tests/test_c7_room.py` (slow): the real `train` command, 8 envs x 10 iterations, finite, checkpoints at 5 and 9, the ONNX
-`(1, 1343) -> (1, 3)`, metadata `task = Mjlab-Nav-Deploy-Room-MicroDuck`, `policy_step_s = 0.1`, `lateral_limit = 0.0`.
+`(1, 1343) -> (1, 3)`, metadata `task = Mjlab-Nav-Deploy-Room-MicroDuck`, `policy_step_s = 0.1`, `lateral_limit = 0.0`: passed.
 
 ### CPU time
 
 | Task | Iterations | Mean iteration | Median | Max | Collection | PPO update |
 | --- | --- | --- | --- | --- | --- | --- |
-| M2d | 10 | **8.08 s** | 8.07 | 8.16 | 8.04 | 0.04 |
-| M2b, same machine, same session | 20 | 7.95 s | 7.89 | 8.67 | 7.91 | 0.04 |
+| M2d | 10 | **8.11 s** | 8.13 | 8.28 | 8.07 | 0.04 |
+| M2b, same machine, same session (run straight after) | 10 | 8.03 s | 8.04 | 8.16 | 7.99 | 0.04 |
 
-M2d costs 1.6% more per iteration than M2b measured today. `docs/M2.md`'s 10.9 s for M2b was measured on another day, under another
-load, and is not the right comparison: against it M2d would look 26% faster, which it is not. The GB10 is not measured.
+M2d costs 1.0% more per iteration than M2b measured in the same session (first iteration excluded in both). The GB10 is not measured.
 
 ## The DGX command
 
@@ -112,17 +127,22 @@ load, and is not the right comparison: against it M2d would look 26% faster, whi
 MICRODUCK_WALKER_ONNX=/path/to/velstand.onnx uv run train Mjlab-Nav-Deploy-Room-MicroDuck --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.save-interval 100 --agent.logger tensorboard
 ```
 
-Watch the log for `room: N resets, ... without (x%)`: about 15% is expected.
+The log prints `room: N resets, x drawn again to fit the scene, y with a side grown past 6.0 m to hold it` every 100,000 resets.
 
 ## Not covered
 
-- Nothing ran on a GPU or at 4,096 envs; the far-return sample is 4,096 *resets* in batches of 128 envs, and the time is CPU, 8 envs.
+- Nothing ran on a GPU or at 4,096 envs; the far-return and size samples are 4,096 *resets* in batches of 128 envs, and the time is CPU, 8 envs.
 - No model was trained on this task past 10 iterations: that the far returns stop the braking, or that M2d beats M2b at the navigator, is
   untested. The diagnosis's other cause (floor returns that training drops and the navigator keeps) is not addressed.
 - The far-return share counts rays as cast at the reset, not the delivered, impaired frames over an episode, and not the navigator's frames.
-- 15.5% of resets have no room (open field, as M2b); no room under 3.2 m is built; rooms are axis-aligned with the duck's reset heading
-  (as the layouts are), so the start never faces a corner or a wall at a random angle to the room; the room's yaw is not randomised.
+- No room under 3.2 m is built; rooms over 6 m exist (up to 6.8 m in the sample) so the size is not capped at the task's stated range;
+  rooms are axis-aligned with the duck's reset heading (as the layouts are), so the start never faces a corner or a wall at a random
+  angle to the room; the room's yaw is not randomised.
+- The room's generator is one per env object (seeded from the env's seed), not one per sub-environment: the same seed gives the same
+  rooms, but which sub-environments reset together changes which draw each gets. The obstacle, start and goal bit-identity was tested
+  with 3 resets of all 64 envs, not with partial resets; an `env.seed` of `None` seeds the room from torch's initial seed.
 - Walls have one height (0.5 m) and one thickness; doors, corridors and rooms joined to rooms (the generator's challenges 2, 3, 23) are not built.
 - `barrier_bypass` ignores walls by choice; a duck that goes round the field is not rewarded for it, nor is it penalised beyond the
   approach and clearance terms.
-- The critic's privileged input is 12 clearances, not 8; a checkpoint trained on M2b cannot be resumed on M2d for its critic.
+- The critic does not see the walls (8 clearances, as M2b): its layout equals M2b's, so an M2b critic's shapes apply (resuming an M2b
+  checkpoint on M2d was not tried). What the critic does not see of a wall, it can only infer from the actor's inputs and the returns.

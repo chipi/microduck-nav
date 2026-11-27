@@ -68,10 +68,11 @@ class ObstacleField:
             self.half_sizes[:, :first], self.radii[:, :first] = half, radii
             self.blocks_request[first:] = False  # a wall round the field is not an obstacle to get past
             self.geom_ids = torch.tensor([int(env.scene[name].indexing.geom_ids[0]) for name in self.names[first:]], device=dev)
-            self.room_lo = torch.zeros(n, 2, device=dev)  # the inner corners in the robot's reset-heading frame; meaningful where built
+            self.room_lo = torch.zeros(n, 2, device=dev)  # the inner corners in the robot's reset-heading frame
             self.room_hi = torch.zeros(n, 2, device=dev)
-            self.room_built = torch.zeros(n, dtype=torch.bool, device=dev)
-            self.room_counts = torch.zeros(3, dtype=torch.long, device=dev)  # rooms built, of them drawn again to fit, environments without a room
+            self.room_counts = torch.zeros(3, dtype=torch.long, device=dev)  # resets, of them with a side drawn again to fit, with a side grown past the range
+            seed = getattr(env.cfg, "seed", None)  # the room's own stream: it never touches the one NVIDIA's layouts and the command draw from
+            self.room_generator = torch.Generator(device=dev).manual_seed(torch.initial_seed() if seed is None else int(seed))
             self.room_seen = 0  # resets so far
         elif self.pool:
             # the footprints differ per environment: (n, k, 2) half sides and (n, k) radii (none: boxes only)
@@ -83,10 +84,14 @@ class ObstacleField:
         else:
             self.half_sizes, self.radii = footprints(dev)
 
-    def geometry(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def geometry(self, slots: int | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Centres (n, k, 3), yaw quaternions (n, k, 4), local half sizes, radii, as NVIDIA's obstacle_geometry: (k, 2) and (k,) for
-        NVIDIA's fixed slots, (n, k, 2) and (n, k) for the pool's."""
-        return self.pos, quat_from_yaw(self.yaw), self.half_sizes, self.radii
+        NVIDIA's fixed slots, (n, k, 2) and (n, k) for the pool's. `slots`: only the first so many slots (the critic sees NVIDIA's eight, not the
+        room's walls)."""
+        if slots is None:
+            return self.pos, quat_from_yaw(self.yaw), self.half_sizes, self.radii
+        s = slice(None, slots)
+        return self.pos[:, s], quat_from_yaw(self.yaw)[:, s], self.half_sizes[..., s, :], self.radii[..., s]
 
 
 def get_field(env) -> ObstacleField:
